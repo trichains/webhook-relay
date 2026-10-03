@@ -13,7 +13,7 @@ export type DbHandle = {
   close: () => Promise<void>;
 };
 
-const MIGRATIONS_FOLDER = path.join(process.cwd(), "drizzle");
+export const MIGRATIONS_FOLDER = path.join(process.cwd(), "drizzle");
 
 /**
  * Creates a fresh in-memory PGlite database with migrations applied.
@@ -34,7 +34,7 @@ export async function createPgliteHandle(opts: { seed?: boolean } = {}): Promise
   return handle;
 }
 
-async function createPgHandle(url: string): Promise<DbHandle> {
+export async function createPgHandle(url: string): Promise<DbHandle> {
   const { Pool } = await import("pg");
   const { drizzle } = await import("drizzle-orm/node-postgres");
   const pool = new Pool({ connectionString: url, max: 5 });

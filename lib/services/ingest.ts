@@ -3,8 +3,10 @@ import type { DbHandle } from "@/lib/db/client";
 import { deliveries, destinations, events, sources } from "@/lib/db/schema";
 import { extractEventType, matchesFilter } from "@/lib/event-type";
 import { deriveIdempotencyKey } from "@/lib/idempotency";
+import { env } from "@/lib/env";
 import { log } from "@/lib/log";
-import { HOTTOK_HEADER, verifyRequest } from "@/lib/signing";
+import { pruneEvents, SANDBOX_LIMITS } from "@/lib/services/sources";
+import { activeSecrets, HOTTOK_HEADER, verifyRequest } from "@/lib/signing";
 
 export const MAX_BODY_BYTES = 1024 * 1024; // 1 MB
 /** Rejected (unverified) requests are kept for audit, truncated to this size. */
@@ -58,10 +60,18 @@ function tryParseJson(raw: string): { ok: true; value: unknown } | { ok: false }
  */
 export async function ingestWebhook(
   handle: DbHandle,
-  params: { sourceSlug: string; request: Request; requestId?: string; now?: number },
+  params: {
+    sourceSlug: string;
+    request: Request;
+    requestId?: string;
+    now?: number;
+    /** Keep at most this many events (oldest dropped). Defaults to a cap in sandbox mode only. */
+    maxStoredEvents?: number;
+  },
 ): Promise<IngestResult> {
   const { db } = handle;
   const { request, sourceSlug, requestId } = params;
+  const maxStored = params.maxStoredEvents ?? (env.isSandbox ? SANDBOX_LIMITS.events : undefined);
   const url = new URL(request.url);
 
   const [source] = await db.select().from(sources).where(eq(sources.slug, sourceSlug));
@@ -80,7 +90,7 @@ export async function ingestWebhook(
 
   const verification = verifyRequest({
     scheme: source.scheme,
-    secret: source.secret,
+    secrets: activeSecrets(source, params.now ? new Date(params.now * 1000) : new Date()),
     rawBody,
     headers: request.headers,
     url,
@@ -107,6 +117,7 @@ export async function ingestWebhook(
         status: "rejected",
       })
       .returning({ id: events.id });
+    if (maxStored) await pruneEvents(db, maxStored);
     log("warn", "ingest.rejected", { requestId, source: source.slug, reason: verification.reason, eventId: rejected.id });
     return {
       httpStatus: 401,
@@ -182,6 +193,7 @@ export async function ingestWebhook(
     };
   }
 
+  if (maxStored) await pruneEvents(db, maxStored);
   log("info", "ingest.accepted", {
     requestId,
     source: source.slug,

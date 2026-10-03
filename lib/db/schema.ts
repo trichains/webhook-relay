@@ -35,6 +35,9 @@ export const sources = pgTable("sources", {
   slug: text("slug").notNull().unique(),
   scheme: text("scheme").$type<SigningScheme>().notNull(),
   secret: text("secret").notNull(),
+  /** After a rotation the old secret keeps verifying until this moment, so senders can switch over. */
+  previousSecret: text("previous_secret"),
+  previousSecretExpiresAt: timestamp("previous_secret_expires_at", { withTimezone: true }),
   /** Dot path used to read the event type from the JSON payload. */
   eventTypePath: text("event_type_path").notNull().default("event"),
   createdAt: createdAt(),

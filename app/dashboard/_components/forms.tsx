@@ -66,7 +66,7 @@ export function SendTestWebhookButton({ sourceId }: { sourceId: string }) {
   );
 }
 
-export function CreateSourceForm() {
+export function CreateSourceForm({ sandbox = false }: { sandbox?: boolean }) {
   const [state, action] = useActionState(createSourceAction, initial);
   const id = useId();
   const v = state.values ?? {};
@@ -95,8 +95,9 @@ export function CreateSourceForm() {
           <select id={`${id}-scheme`} name="scheme" className="input" defaultValue={v.scheme ?? "hmac-sha256"}>
             <option value="hmac-sha256">hmac-sha256 (X-Signature: t=…,v1=…)</option>
             <option value="hotmart-hottok">hotmart-hottok (X-HOTMART-HOTTOK)</option>
-            <option value="none">none (insecure, accepts anything)</option>
+            {sandbox ? null : <option value="none">none (insecure, accepts anything)</option>}
           </select>
+          {sandbox ? <p className="mt-1 text-xs text-faint">The sandbox requires a signing scheme.</p> : null}
           <FieldError errors={fe.scheme} />
         </div>
         <div>
@@ -169,14 +170,14 @@ export function RotateSecretForm({ id, scheme }: { id: string; scheme: SigningSc
       >
         <input type="hidden" name="id" value={id} />
         <SubmitButton pendingLabel="Rotating…">Rotate secret</SubmitButton>
-        {!state.secret ? <FormMessage state={state} /> : null}
+        <FormMessage state={state} />
       </form>
       {state.secret ? <SecretPanel secret={state.secret} scheme={scheme} /> : null}
     </div>
   );
 }
 
-export function DestinationForm({ sourceId, destination }: { sourceId: string; destination?: Destination }) {
+export function DestinationForm({ sourceId, destination, sandbox = false }: { sourceId: string; destination?: Destination; sandbox?: boolean }) {
   const [state, action] = useActionState(destination ? updateDestinationAction : createDestinationAction, initial);
   const uid = useId();
   const fe = state.fieldErrors ?? {};
@@ -215,6 +216,9 @@ export function DestinationForm({ sourceId, destination }: { sourceId: string; d
           <option value="/api/sink/reject" />
         </datalist>
         <FieldError errors={fe.url} />
+        {sandbox && !fe.url ? (
+          <p className="mt-1 text-xs text-faint">Sandbox: only the built-in sinks are allowed, so the public demo cannot be used to call arbitrary URLs.</p>
+        ) : null}
       </div>
       <div className="sm:col-span-3">
         <label className="label" htmlFor={`${uid}-filter`}>

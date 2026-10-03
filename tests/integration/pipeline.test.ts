@@ -1,9 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { createPgliteHandle, type DbHandle } from "@/lib/db/client";
+import type { DbHandle } from "@/lib/db/client";
+import { createTestHandle, driverLabel } from "./test-db";
 import { attempts, deliveries, destinations, events, sources } from "@/lib/db/schema";
 import { SANDBOX_BACKOFF } from "@/lib/backoff";
-import { claimDueDeliveries, deliverNow, processQueue, type EngineOptions } from "@/lib/services/delivery";
+import {
+  attemptClaimedDelivery,
+  claimDelivery,
+  claimDueDeliveries,
+  deliverNow,
+  processQueue,
+  type EngineOptions,
+} from "@/lib/services/delivery";
+import { pruneEvents, rotateSourceSecret } from "@/lib/services/sources";
 import { ingestWebhook } from "@/lib/services/ingest";
 import { replayEvent, retryDeadLetters } from "@/lib/services/replay";
 import { buildTestRequest } from "@/lib/services/test-webhook";
@@ -20,6 +29,7 @@ const fakeFetch: typeof fetch = async (input) => {
   const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
   const kind = url.pathname.split("/").pop() ?? "";
   if (url.pathname.startsWith("/api/sink/") && isSinkKind(kind)) return sinkResponse(kind, { slowMs: 1 });
+  if (url.pathname === "/redirect") return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/" } });
   throw new TypeError(`fetch failed: ${url.href}`);
 };
 
@@ -31,6 +41,12 @@ const engine = (): EngineOptions => ({
   backoff: SANDBOX_BACKOFF,
   now: () => clock,
   random: () => 0.5,
+  urlPolicy: { sandbox: true, allowPrivate: false },
+});
+const realEngine = (): EngineOptions => ({
+  ...engine(),
+  urlPolicy: { sandbox: false, allowPrivate: false },
+  lookup: async () => ["93.184.216.34"],
 });
 
 async function createSource(sinks: { kind: string; maxAttempts?: number; filter?: string }[]) {
@@ -38,6 +54,7 @@ async function createSource(sinks: { kind: string; maxAttempts?: number; filter?
     .insert(sources)
     .values({ name: "Checkout", slug: "checkout", scheme: "hmac-sha256", secret: SECRET })
     .returning();
+  if (sinks.length === 0) return { source, dests: [] };
   const dests = await handle.db
     .insert(destinations)
     .values(
@@ -63,7 +80,7 @@ function signedRequest(payload: unknown, extraHeaders: Record<string, string> = 
 }
 
 beforeEach(async () => {
-  handle = await createPgliteHandle();
+  handle = await createTestHandle();
   clock = new Date();
 });
 
@@ -210,13 +227,15 @@ describe("delivery engine", () => {
     const { dests } = await createSource([{ kind: "ok" }]);
     await handle.db.update(destinations).set({ url: "https://unreachable.invalid/hook" }).where(eq(destinations.id, dests[0].id));
     const res = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "d", event: "order.paid" }) });
-    await deliverNow(handle, res.deliveryIds, engine());
+    await deliverNow(handle, res.deliveryIds, realEngine());
     const [attempt] = await handle.db.select().from(attempts);
     expect(attempt).toMatchObject({ ok: false, statusCode: null });
     expect(attempt.error).toContain("fetch failed");
+    // A network error is transient: the delivery is scheduled for a retry.
+    expect((await handle.db.select().from(deliveries))[0].status).toBe("pending");
   });
 
-  it("never lets two workers claim the same delivery", async () => {
+  it(`never lets two workers claim the same delivery (${driverLabel})`, async () => {
     await createSource([{ kind: "ok" }, { kind: "ok" }, { kind: "ok" }]);
     await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "e", event: "order.paid" }) });
     const later = new Date(Date.now() + 1000);
@@ -268,6 +287,117 @@ describe("replay", () => {
     const request = new Request(`${BASE}/api/ingest/checkout`, { method: "POST", body: "{}" });
     const res = await ingestWebhook(handle, { sourceSlug: "checkout", request });
     await expect(replayEvent(handle.db, res.eventId!)).rejects.toThrow(/cannot be replayed/);
+  });
+});
+
+describe("outbound URL policy", () => {
+  let calls: string[];
+  const spyFetch: typeof fetch = async (input, init) => {
+    calls.push(String(input));
+    return fakeFetch(input, init);
+  };
+  beforeEach(() => {
+    calls = [];
+  });
+
+  it("sandbox: refuses a non-sink URL right before the attempt, without any request", async () => {
+    const { dests } = await createSource([{ kind: "ok" }]);
+    // Written directly to the table, i.e. bypassing the form validation.
+    await handle.db.update(destinations).set({ url: "https://example.com/hook" }).where(eq(destinations.id, dests[0].id));
+    const res = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "s1", event: "order.paid" }) });
+    expect(await deliverNow(handle, res.deliveryIds, { ...engine(), fetchImpl: spyFetch })).toMatchObject({ deadLettered: 1 });
+    expect(calls).toEqual([]);
+    const [attempt] = await handle.db.select().from(attempts);
+    expect(attempt).toMatchObject({ ok: false, statusCode: null, error: "blocked: sandbox only delivers to built-in sinks" });
+  });
+
+  it("real mode: refuses a hostname that resolves to a private address", async () => {
+    const { dests } = await createSource([{ kind: "ok" }]);
+    await handle.db.update(destinations).set({ url: "https://rebind.example.com/hook" }).where(eq(destinations.id, dests[0].id));
+    const res = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "s2", event: "order.paid" }) });
+    await deliverNow(handle, res.deliveryIds, { ...realEngine(), fetchImpl: spyFetch, lookup: async () => ["::ffff:10.0.0.7"] });
+    expect(calls).toEqual([]);
+    const [delivery] = await handle.db.select().from(deliveries);
+    expect(delivery.status).toBe("dead_letter");
+    expect(delivery.lastError).toMatch(/resolves to a private or reserved address/);
+  });
+
+  it("treats a 3xx as a permanent failure and does not follow it", async () => {
+    const { dests } = await createSource([{ kind: "ok" }]);
+    await handle.db.update(destinations).set({ url: "https://example.com/redirect" }).where(eq(destinations.id, dests[0].id));
+    const res = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "s3", event: "order.paid" }) });
+    await deliverNow(handle, res.deliveryIds, { ...realEngine(), fetchImpl: spyFetch });
+    expect(calls).toEqual(["https://example.com/redirect"]);
+    const [attempt] = await handle.db.select().from(attempts);
+    expect(attempt).toMatchObject({ ok: false, statusCode: 302, error: "redirect not followed (HTTP 302)" });
+    expect((await handle.db.select().from(deliveries))[0].status).toBe("dead_letter");
+  });
+});
+
+describe("stale lock reclaim", () => {
+  it("a slow worker whose lock was reclaimed cannot write its result", async () => {
+    await createSource([{ kind: "ok" }]);
+    const res = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "l1", event: "order.paid" }) });
+    const t0 = new Date(Date.now() + 1000);
+    const slow = await claimDelivery(handle.db, res.deliveryIds[0], t0);
+    expect(slow).not.toBeNull();
+
+    // Six minutes later another worker considers the row abandoned and reclaims it.
+    const [fresh] = await claimDueDeliveries(handle, 10, new Date(t0.getTime() + 6 * 60_000));
+    expect(fresh?.id).toBe(res.deliveryIds[0]);
+
+    // The slow worker finally finishes: its outcome is dropped.
+    expect(await attemptClaimedDelivery(handle.db, slow!, engine())).toBeNull();
+    expect(await handle.db.select().from(attempts)).toHaveLength(0);
+    expect((await handle.db.select().from(deliveries))[0].status).toBe("processing");
+
+    // The worker that owns the lock records exactly one attempt.
+    expect(await attemptClaimedDelivery(handle.db, fresh, engine())).toMatchObject({ status: "succeeded" });
+    expect(await handle.db.select().from(attempts)).toHaveLength(1);
+  });
+});
+
+describe("secret rotation", () => {
+  it("accepts the previous secret during the grace period only", async () => {
+    const { source } = await createSource([{ kind: "ok" }]);
+    const rotated = await rotateSourceSecret(handle.db, source.id);
+    if (!rotated.ok) throw new Error(rotated.error);
+
+    // SECRET is now the previous secret.
+    const old = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "r1", event: "order.paid" }) });
+    expect(old.httpStatus).toBe(202);
+    const [event] = await handle.db.select().from(events).where(eq(events.id, old.eventId!));
+    expect(event.verificationReason).toContain("previous secret");
+
+    await handle.db.update(sources).set({ previousSecretExpiresAt: new Date(Date.now() - 1000) }).where(eq(sources.id, source.id));
+    const expired = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id: "r2", event: "order.paid" }) });
+    expect(expired.httpStatus).toBe(401);
+
+    const raw = JSON.stringify({ id: "r3", event: "order.paid" });
+    const current = new Request(`${BASE}/api/ingest/checkout`, {
+      method: "POST",
+      headers: { "x-signature": signHmac(rotated.secret, raw) },
+      body: raw,
+    });
+    expect((await ingestWebhook(handle, { sourceSlug: "checkout", request: current })).httpStatus).toBe(202);
+  });
+});
+
+describe("event cap", () => {
+  it("drops the oldest events, rejected ones included", async () => {
+    await createSource([]);
+    const forged = new Request(`${BASE}/api/ingest/checkout`, { method: "POST", body: "{}" });
+    expect((await ingestWebhook(handle, { sourceSlug: "checkout", request: forged, maxStoredEvents: 3 })).httpStatus).toBe(401);
+    const kept: string[] = [];
+    for (const id of ["c1", "c2", "c3"]) {
+      await new Promise((r) => setTimeout(r, 5));
+      const res = await ingestWebhook(handle, { sourceSlug: "checkout", request: signedRequest({ id, event: "x" }), maxStoredEvents: 3 });
+      kept.push(res.eventId!);
+    }
+    const rows = await handle.db.select({ id: events.id, verified: events.verified }).from(events);
+    expect(rows.map((r) => r.id).sort()).toEqual([...kept].sort());
+    expect(rows.every((r) => r.verified)).toBe(true);
+    expect(await pruneEvents(handle.db, 1)).toBe(2);
   });
 });
 

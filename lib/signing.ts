@@ -63,22 +63,35 @@ export function verifyHottok(secret: string, headerToken: string | null, queryTo
   return { ok: true, reason: headerToken ? "valid hottok (header)" : "valid hottok (query string)" };
 }
 
+/** Secrets that currently verify for a source: the active one, plus the previous one during its grace period. */
+export function activeSecrets(source: { secret: string; previousSecret: string | null; previousSecretExpiresAt: Date | null }, now = new Date()): string[] {
+  const secrets = [source.secret];
+  if (source.previousSecret && source.previousSecretExpiresAt && source.previousSecretExpiresAt > now) {
+    secrets.push(source.previousSecret);
+  }
+  return secrets;
+}
+
 export function verifyRequest(params: {
   scheme: SigningScheme;
-  secret: string;
+  /** Active secret first, then any previous secret still inside its grace period. */
+  secrets: string[];
   rawBody: string;
   headers: Headers;
   url: URL;
   now?: number;
 }): VerificationResult {
-  switch (params.scheme) {
-    case "hmac-sha256":
-      return verifyHmac(params.secret, params.rawBody, params.headers.get(HMAC_HEADER), { now: params.now });
-    case "hotmart-hottok":
-      return verifyHottok(params.secret, params.headers.get(HOTTOK_HEADER), params.url.searchParams.get("hottok"));
-    case "none":
-      return { ok: true, reason: "not verified (scheme: none)" };
+  if (params.scheme === "none") return { ok: true, reason: "not verified (scheme: none)" };
+  let first: VerificationResult | null = null;
+  for (const [index, secret] of params.secrets.entries()) {
+    const result =
+      params.scheme === "hmac-sha256"
+        ? verifyHmac(secret, params.rawBody, params.headers.get(HMAC_HEADER), { now: params.now })
+        : verifyHottok(secret, params.headers.get(HOTTOK_HEADER), params.url.searchParams.get("hottok"));
+    if (result.ok) return index === 0 ? result : { ok: true, reason: `${result.reason} (previous secret, still in grace period)` };
+    first ??= result;
   }
+  return first ?? { ok: false, reason: "source has no secret" };
 }
 
 export function generateSecret(scheme: SigningScheme): string {

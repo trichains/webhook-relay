@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeSecrets,
   generateSecret,
   parseSignatureHeader,
   safeEqual,
@@ -78,11 +79,11 @@ describe("hotmart hottok", () => {
 
   it("works through verifyRequest with headers and URL", () => {
     const headers = new Headers({ "X-HOTMART-HOTTOK": hottok });
-    const result = verifyRequest({ scheme: "hotmart-hottok", secret: hottok, rawBody: "{}", headers, url: new URL("http://x/api") });
+    const result = verifyRequest({ scheme: "hotmart-hottok", secrets: [hottok], rawBody: "{}", headers, url: new URL("http://x/api") });
     expect(result.ok).toBe(true);
     const viaQuery = verifyRequest({
       scheme: "hotmart-hottok",
-      secret: hottok,
+      secrets: [hottok],
       rawBody: "{}",
       headers: new Headers(),
       url: new URL(`http://x/api?hottok=${hottok}`),
@@ -99,7 +100,7 @@ describe("helpers", () => {
   });
 
   it("scheme none always passes and is labelled as not verified", () => {
-    const r = verifyRequest({ scheme: "none", secret: "", rawBody: "{}", headers: new Headers(), url: new URL("http://x") });
+    const r = verifyRequest({ scheme: "none", secrets: [], rawBody: "{}", headers: new Headers(), url: new URL("http://x") });
     expect(r).toEqual({ ok: true, reason: "not verified (scheme: none)" });
   });
 
@@ -107,5 +108,41 @@ describe("helpers", () => {
     expect(generateSecret("hmac-sha256")).toMatch(/^whsec_[A-Za-z0-9_-]{40,}$/);
     expect(generateSecret("hotmart-hottok")).toMatch(/^[0-9a-f]{48}$/);
     expect(generateSecret("hmac-sha256")).not.toBe(generateSecret("hmac-sha256"));
+  });
+});
+
+describe("secret rotation", () => {
+  const rotatedAt = new Date("2026-10-01T12:00:00Z");
+  const source = {
+    secret: "whsec_new",
+    previousSecret: "whsec_old",
+    previousSecretExpiresAt: new Date(rotatedAt.getTime() + 24 * 3600_000),
+  };
+
+  it("keeps the previous secret active only during the grace period", () => {
+    expect(activeSecrets(source, rotatedAt)).toEqual(["whsec_new", "whsec_old"]);
+    expect(activeSecrets(source, new Date(rotatedAt.getTime() + 25 * 3600_000))).toEqual(["whsec_new"]);
+    expect(activeSecrets({ secret: "s", previousSecret: null, previousSecretExpiresAt: null })).toEqual(["s"]);
+  });
+
+  it("verifies signatures made with either active secret and says which one matched", () => {
+    const headersFor = (secret: string) => new Headers({ "x-signature": signHmac(secret, body, now) });
+    const url = new URL("http://x/api");
+    const secrets = ["whsec_new", "whsec_old"];
+    expect(verifyRequest({ scheme: "hmac-sha256", secrets, rawBody: body, headers: headersFor("whsec_new"), url, now })).toEqual({
+      ok: true,
+      reason: "valid hmac-sha256 signature",
+    });
+    const old = verifyRequest({ scheme: "hmac-sha256", secrets, rawBody: body, headers: headersFor("whsec_old"), url, now });
+    expect(old.ok).toBe(true);
+    expect(old.reason).toContain("previous secret");
+    const expired = verifyRequest({ scheme: "hmac-sha256", secrets: ["whsec_new"], rawBody: body, headers: headersFor("whsec_old"), url, now });
+    expect(expired).toEqual({ ok: false, reason: "signature mismatch" });
+  });
+
+  it("works for hottok as well", () => {
+    const headers = new Headers({ "x-hotmart-hottok": "old-token" });
+    const r = verifyRequest({ scheme: "hotmart-hottok", secrets: ["new-token", "old-token"], rawBody: "{}", headers, url: new URL("http://x") });
+    expect(r.ok).toBe(true);
   });
 });

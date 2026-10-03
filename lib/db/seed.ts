@@ -3,6 +3,7 @@ import { attempts, deliveries, destinations, events, sources, type DeliveryStatu
 import { backoffDelayMs, SANDBOX_BACKOFF } from "@/lib/backoff";
 import { matchesFilter } from "@/lib/event-type";
 import { computeEventStatus } from "@/lib/services/delivery";
+import { SEED_SOURCE_SLUGS } from "@/lib/services/sources";
 import { generateSecret, signHmac } from "@/lib/signing";
 import { hotmartPayload, mulberry32, orderPayload, type Rng } from "@/lib/samples";
 
@@ -46,7 +47,7 @@ export async function seedDatabase(db: Db, now = new Date()) {
   const checkout = {
     id: crypto.randomUUID(),
     name: "Store checkout",
-    slug: "store-checkout",
+    slug: SEED_SOURCE_SLUGS[0],
     scheme: "hmac-sha256" as const,
     secret: generateSecret("hmac-sha256"),
     eventTypePath: "event",
@@ -54,7 +55,7 @@ export async function seedDatabase(db: Db, now = new Date()) {
   const hotmart = {
     id: crypto.randomUUID(),
     name: "Hotmart",
-    slug: "hotmart",
+    slug: SEED_SOURCE_SLUGS[1],
     scheme: "hotmart-hottok" as const,
     secret: generateSecret("hotmart-hottok"),
     eventTypePath: "event",

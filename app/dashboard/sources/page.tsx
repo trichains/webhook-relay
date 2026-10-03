@@ -4,6 +4,7 @@ import { CreateSourceForm } from "@/app/dashboard/_components/forms";
 import { Card, EmptyState, Mono, PageHeader, SchemeBadge } from "@/components/ui";
 import { getDbHandle } from "@/lib/db/client";
 import { listSources } from "@/lib/queries";
+import { env } from "@/lib/env";
 
 export const metadata = { title: "Sources" };
 
@@ -56,7 +57,7 @@ export default async function SourcesPage() {
       </Card>
 
       <Card title="New source" className="mt-4">
-        <CreateSourceForm />
+        <CreateSourceForm sandbox={env.isSandbox} />
       </Card>
     </>
   );

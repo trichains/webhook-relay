@@ -13,6 +13,15 @@ import { deliverNow, processQueue, type ProcessSummary } from "@/lib/services/de
 import { replayEvent, ReplayError, retryDeadLetters } from "@/lib/services/replay";
 import { sendTestWebhook } from "@/lib/services/test-webhook";
 import { generateSecret } from "@/lib/signing";
+import { env } from "@/lib/env";
+import {
+  countDestinations,
+  countSources,
+  isProtectedSource,
+  revokePreviousSecret,
+  rotateSourceSecret,
+  SANDBOX_LIMITS,
+} from "@/lib/services/sources";
 import {
   destinationSchema,
   destinationUpdateSchema,
@@ -50,10 +59,16 @@ export async function createSourceAction(_prev: ActionState, formData: FormData)
   const parsed = sourceSchema.safeParse(values);
   if (!parsed.success) return validationFailure(parsed.error, values);
 
+  if (env.isSandbox && parsed.data.scheme === "none") {
+    return { ok: false, fieldErrors: { scheme: ["The public sandbox requires a signing scheme (hmac-sha256 or hotmart-hottok)"] }, values };
+  }
   const slug = parsed.data.slug || slugify(parsed.data.name);
   if (!slug) return { ok: false, fieldErrors: { slug: ["Could not derive a slug from the name; type one"] }, values };
 
   const { db } = await getDbHandle();
+  if (env.isSandbox && (await countSources(db)) >= SANDBOX_LIMITS.sources) {
+    return { ok: false, error: `The sandbox is limited to ${SANDBOX_LIMITS.sources} sources. It resets on the next cold start.`, values };
+  }
   const [taken] = await db.select({ id: sources.id }).from(sources).where(eq(sources.slug, slug));
   if (taken) return { ok: false, fieldErrors: { slug: [`"${slug}" is already used by another source`] }, values };
 
@@ -92,19 +107,31 @@ export async function updateSourceAction(_prev: ActionState, formData: FormData)
 export async function rotateSecretAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const id = String(formData.get("id") ?? "");
   const { db } = await getDbHandle();
-  const [source] = await db.select().from(sources).where(eq(sources.id, id));
-  if (!source) return { ok: false, error: "Source not found." };
-  if (source.scheme === "none") return { ok: false, error: "This source does not use a secret." };
-  const secret = generateSecret(source.scheme);
-  await db.update(sources).set({ secret }).where(eq(sources.id, id));
-  log("info", "source.secret_rotated", { sourceId: id });
+  const result = await rotateSourceSecret(db, id);
+  if (!result.ok) return { ok: false, error: result.error };
   revalidateDashboard();
-  return { ok: true, message: "New secret generated. Senders using the old one will now be rejected.", secret };
+  return {
+    ok: true,
+    message: `New secret generated. The previous one keeps working until ${result.previousSecretExpiresAt.toISOString().replace("T", " ").slice(0, 16)} UTC.`,
+    secret: result.secret,
+  };
+}
+
+export async function revokePreviousSecretAction(formData: FormData) {
+  const id = String(formData.get("id") ?? "");
+  const { db } = await getDbHandle();
+  await revokePreviousSecret(db, id);
+  revalidateDashboard();
 }
 
 export async function deleteSourceAction(formData: FormData) {
   const id = String(formData.get("id") ?? "");
   const { db } = await getDbHandle();
+  const [source] = await db.select({ slug: sources.slug }).from(sources).where(eq(sources.id, id));
+  if (!source || isProtectedSource(source.slug)) {
+    log("warn", "source.delete_refused", { sourceId: id });
+    redirect(`/dashboard/sources/${id}`);
+  }
   await db.delete(sources).where(eq(sources.id, id));
   log("info", "source.deleted", { sourceId: id });
   revalidateDashboard();
@@ -157,6 +184,9 @@ export async function createDestinationAction(_prev: ActionState, formData: Form
   const { db } = await getDbHandle();
   const [source] = await db.select({ id: sources.id }).from(sources).where(eq(sources.id, parsed.data.sourceId));
   if (!source) return { ok: false, error: "Source not found." };
+  if (env.isSandbox && (await countDestinations(db, source.id)) >= SANDBOX_LIMITS.destinationsPerSource) {
+    return { ok: false, error: `The sandbox allows ${SANDBOX_LIMITS.destinationsPerSource} destinations per source.`, values };
+  }
   await db.insert(destinations).values({ ...parsed.data, eventFilter: parsed.data.eventFilter ?? null });
   log("info", "destination.created", { sourceId: source.id, url: parsed.data.url });
   revalidateDashboard();
@@ -191,6 +221,15 @@ export async function toggleDestinationAction(formData: FormData) {
 export async function deleteDestinationAction(formData: FormData) {
   const id = String(formData.get("id") ?? "");
   const { db } = await getDbHandle();
+  const [row] = await db
+    .select({ slug: sources.slug })
+    .from(destinations)
+    .innerJoin(sources, eq(sources.id, destinations.sourceId))
+    .where(eq(destinations.id, id));
+  if (!row || isProtectedSource(row.slug)) {
+    log("warn", "destination.delete_refused", { destinationId: id });
+    return;
+  }
   await db.delete(destinations).where(eq(destinations.id, id));
   log("info", "destination.deleted", { destinationId: id });
   revalidateDashboard();

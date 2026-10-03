@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { connection } from "next/server";
-import { deleteDestinationAction, deleteSourceAction, toggleDestinationAction } from "@/app/dashboard/actions";
+import { deleteDestinationAction, deleteSourceAction, revokePreviousSecretAction, toggleDestinationAction } from "@/app/dashboard/actions";
 import { DestinationForm, RotateSecretForm, SendTestWebhookButton, SourceSettingsForm } from "@/app/dashboard/_components/forms";
 import { ConfirmSubmit, CopyButton, SubmitButton } from "@/components/client";
-import { Badge, Card, EmptyState, Mono, PageHeader, SchemeBadge } from "@/components/ui";
+import { Badge, Card, EmptyState, formatUtc, Mono, PageHeader, SchemeBadge } from "@/components/ui";
+import { env } from "@/lib/env";
+import { isProtectedSource } from "@/lib/services/sources";
 import { getDbHandle } from "@/lib/db/client";
 import { getSource } from "@/lib/queries";
 import { currentOrigin } from "@/lib/request-origin";
@@ -38,6 +40,8 @@ export default async function SourcePage({ params }: PageProps<"/dashboard/sourc
   if (!data) notFound();
   const { source, destinations } = data;
   const ingestUrl = `${await currentOrigin()}/api/ingest/${source.slug}`;
+  const readOnly = isProtectedSource(source.slug);
+  const previousActive = !!source.previousSecret && !!source.previousSecretExpiresAt && source.previousSecretExpiresAt > new Date();
 
   return (
     <>
@@ -95,15 +99,30 @@ export default async function SourcePage({ params }: PageProps<"/dashboard/sourc
               <div className="mb-2 text-xs text-muted">
                 Secret: <Mono>{source.secret.slice(0, 4)}••••••••</Mono> (stored server-side, shown only once when generated)
               </div>
-              <RotateSecretForm id={source.id} scheme={source.scheme} />
+              {previousActive ? (
+                <form action={revokePreviousSecretAction} className="mb-3 flex flex-wrap items-center gap-2 text-xs text-warn">
+                  <input type="hidden" name="id" value={source.id} />
+                  <span>
+                    Previous secret <Mono>{source.previousSecret!.slice(0, 4)}••••</Mono> is still accepted until {formatUtc(source.previousSecretExpiresAt!)}.
+                  </span>
+                  <SubmitButton className="btn btn-sm">Revoke now</SubmitButton>
+                </form>
+              ) : null}
+              {readOnly ? null : <RotateSecretForm id={source.id} scheme={source.scheme} />}
             </div>
           ) : null}
-          <form action={deleteSourceAction} className="mt-4 border-t border-line pt-4">
-            <input type="hidden" name="id" value={source.id} />
-            <ConfirmSubmit message={`Delete "${source.name}" with all its destinations and events? This cannot be undone.`} className="btn btn-sm btn-danger">
-              Delete source
-            </ConfirmSubmit>
-          </form>
+          {readOnly ? (
+            <p className="mt-4 border-t border-line pt-4 text-xs text-muted">
+              Demo source: read-only in the sandbox (no delete, no secret rotation). Create your own source to get a secret you can sign with.
+            </p>
+          ) : (
+            <form action={deleteSourceAction} className="mt-4 border-t border-line pt-4">
+              <input type="hidden" name="id" value={source.id} />
+              <ConfirmSubmit message={`Delete "${source.name}" with all its destinations and events? This cannot be undone.`} className="btn btn-sm btn-danger">
+                Delete source
+              </ConfirmSubmit>
+            </form>
+          )}
         </Card>
       </div>
 
@@ -129,21 +148,23 @@ export default async function SourcePage({ params }: PageProps<"/dashboard/sourc
                     <input type="hidden" name="active" value={String(!d.active)} />
                     <SubmitButton className="btn btn-sm">{d.active ? "Pause" : "Resume"}</SubmitButton>
                   </form>
-                  <form action={deleteDestinationAction}>
-                    <input type="hidden" name="id" value={d.id} />
-                    <ConfirmSubmit message={`Delete destination "${d.name}" and its delivery history?`} className="btn btn-sm btn-danger">
-                      Delete
-                    </ConfirmSubmit>
-                  </form>
+                  {readOnly ? null : (
+                    <form action={deleteDestinationAction}>
+                      <input type="hidden" name="id" value={d.id} />
+                      <ConfirmSubmit message={`Delete destination "${d.name}" and its delivery history?`} className="btn btn-sm btn-danger">
+                        Delete
+                      </ConfirmSubmit>
+                    </form>
+                  )}
                 </>
               }
             >
-              <DestinationForm sourceId={source.id} destination={d} />
+              <DestinationForm sourceId={source.id} destination={d} sandbox={env.isSandbox} />
             </Card>
           ))
         )}
         <Card title="Add destination">
-          <DestinationForm sourceId={source.id} />
+          <DestinationForm sourceId={source.id} sandbox={env.isSandbox} />
         </Card>
       </div>
     </>
