@@ -149,3 +149,22 @@ describe("delivery rules", () => {
     expect(resolveTargetUrl("https://example.com/hook", "http://x")).toBe("https://example.com/hook");
   });
 });
+
+describe("destination URL validation", () => {
+  it("accepts built-in sinks and public URLs", async () => {
+    const { validateDestinationUrl } = await import("@/lib/validation");
+    expect(validateDestinationUrl("/api/sink/ok", false)).toBeNull();
+    expect(validateDestinationUrl("https://api.example.com/hooks", false)).toBeNull();
+  });
+
+  it("rejects unknown sinks, bad schemes, credentials and private hosts in production", async () => {
+    const { validateDestinationUrl } = await import("@/lib/validation");
+    expect(validateDestinationUrl("/api/sink/nope", false)).toMatch(/built-in sink/);
+    expect(validateDestinationUrl("ftp://example.com", false)).toMatch(/http/);
+    expect(validateDestinationUrl("https://user:pw@example.com", false)).toMatch(/Credentials/);
+    for (const host of ["http://localhost:3000", "http://127.0.0.1", "http://10.0.0.5", "http://192.168.1.2", "http://169.254.169.254", "http://[::1]"]) {
+      expect(validateDestinationUrl(host, false)).toMatch(/Private/);
+    }
+    expect(validateDestinationUrl("http://localhost:4000/hook", true)).toBeNull();
+  });
+});
