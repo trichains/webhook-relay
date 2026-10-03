@@ -36,8 +36,8 @@ export default async function OverviewPage() {
           hint={`${overview.settled24h} settled deliveries`}
         />
         <Stat label="Dead letters" value={overview.deadLetters} tone={overview.deadLetters > 0 ? "bad" : undefined} hint={<Link href="/dashboard/dead-letters" className="underline underline-offset-2">open queue</Link>} />
-        <Stat label="Latency p50" value={formatMs(overview.p50)} hint={`${overview.attempts24h} attempts`} />
-        <Stat label="Latency p95" value={formatMs(overview.p95)} hint={`${overview.pending} deliveries queued`} />
+        <Stat label="Latency p50" value={formatMs(overview.p50)} hint={`${overview.pending} deliveries queued`} />
+        <Stat label="Latency p95" value={formatMs(overview.p95)} hint={`over ${overview.attempts24h} attempts`} />
       </div>
 
       <Card title="Events per hour (48h)" className="mt-4">

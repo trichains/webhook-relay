@@ -14,7 +14,7 @@ const LINKS = [
 export function DashboardNav() {
   const pathname = usePathname();
   return (
-    <nav aria-label="Dashboard" className="-mb-px flex gap-1 overflow-x-auto">
+    <nav aria-label="Dashboard" className="-mb-px flex flex-wrap gap-x-1">
       {LINKS.map((link) => {
         const active = link.exact ? pathname === link.href : pathname.startsWith(link.href);
         return (
@@ -22,7 +22,7 @@ export function DashboardNav() {
             key={link.href}
             href={link.href}
             aria-current={active ? "page" : undefined}
-            className={`whitespace-nowrap border-b-2 px-3 py-2 text-sm ${
+            className={`whitespace-nowrap border-b-2 px-2.5 py-2 text-sm sm:px-3 ${
               active ? "border-accent text-fg" : "border-transparent text-muted hover:text-fg"
             }`}
           >

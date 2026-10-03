@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { siteUrl } from "@/lib/env";
 
 const inter = Inter({ variable: "--font-inter", subsets: ["latin"] });
 
 export const metadata: Metadata = {
+  metadataBase: siteUrl(),
   title: { default: "Webhook Relay", template: "%s · Webhook Relay" },
   description:
     "Webhook gateway for payment and sales platforms: signature verification, idempotency, retries with backoff, dead-letter queue and replay.",

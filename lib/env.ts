@@ -21,12 +21,21 @@ export const env = {
 };
 
 /**
- * Base URL used to resolve built-in sink paths (e.g. `/api/sink/ok`) and the
- * "send test webhook" target. Prefers the origin of the current request.
+ * Base URL used to resolve built-in sink paths (e.g. `/api/sink/ok`), ingest URLs shown in the UI
+ * and the "send test webhook" target. Configured values win over the request's Host header,
+ * which a client controls: NEXT_PUBLIC_APP_URL, then Vercel's production domain, then the
+ * request origin, then the deployment URL, then localhost.
  */
 export function resolveBaseUrl(requestOrigin?: string | null): string {
-  if (requestOrigin) return requestOrigin.replace(/\/$/, "");
-  if (env.appUrl) return env.appUrl.replace(/\/$/, "");
+  const strip = (v: string) => v.replace(/\/$/, "");
+  if (env.appUrl) return strip(env.appUrl);
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${strip(process.env.VERCEL_PROJECT_PRODUCTION_URL)}`;
+  if (requestOrigin) return strip(requestOrigin);
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   return `http://localhost:${process.env.PORT ?? 3000}`;
+}
+
+/** Absolute site URL for metadata (Open Graph). */
+export function siteUrl(): URL {
+  return new URL(resolveBaseUrl());
 }
