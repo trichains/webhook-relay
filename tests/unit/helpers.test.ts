@@ -172,10 +172,10 @@ describe("base URL precedence", () => {
 
   it("prefers configured URLs over the client-controlled request origin", () => {
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://relay.example.com/");
-    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "webhook-relay.vercel.app");
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "webhook-relay-gray.vercel.app");
     expect(resolveBaseUrl("https://evil.example")).toBe("https://relay.example.com");
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
-    expect(resolveBaseUrl("https://evil.example")).toBe("https://webhook-relay.vercel.app");
+    expect(resolveBaseUrl("https://evil.example")).toBe("https://webhook-relay-gray.vercel.app");
     vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "");
     expect(resolveBaseUrl("http://localhost:3101")).toBe("http://localhost:3101");
   });

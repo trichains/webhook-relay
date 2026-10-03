@@ -6,7 +6,7 @@ A webhook gateway for payment and sales platforms. It verifies signatures, dedup
 
 [![CI](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Demo](https://img.shields.io/badge/demo-live-f2884b.svg)](https://webhook-relay.vercel.app)
+[![Demo](https://img.shields.io/badge/demo-live-f2884b.svg)](https://webhook-relay-gray.vercel.app)
 
 ![banner](docs/banner.png)
 
