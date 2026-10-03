@@ -1,36 +1,216 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Webhook Relay
 
-## Getting Started
+A webhook gateway for payment and sales platforms. It verifies signatures, deduplicates events, retries failed deliveries with exponential backoff, keeps a searchable audit log and lets you replay anything from a dead-letter queue. Next.js app with a dashboard and a small management API.
 
-First, run the development server:
+[![CI](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Demo](https://img.shields.io/badge/demo-live-f2884b.svg)](https://webhook-relay.vercel.app)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+![banner](docs/banner.png)
+
+## Why
+
+Platforms like Hotmart, Stripe-style payment processors and CRMs tell your systems about sales through webhooks. Handling them directly inside each app tends to go wrong in the same few ways:
+
+- **Forged requests.** Without signature checks, anyone who finds the URL can "approve" a purchase.
+- **Duplicates.** Senders retry on timeouts, so the same `PURCHASE_APPROVED` can arrive two or three times. Without idempotency you grant access twice, send two emails, or count revenue twice.
+- **Downstream outages.** If the member area or the ERP is down for ten minutes, events sent in that window are lost unless something keeps retrying.
+- **No trail.** When a customer says "I paid and got nothing", you need to see exactly what arrived, when, and what your receiver answered.
+
+Webhook Relay sits between the platform and your apps and handles those four problems in one place. Your apps receive a verified, deduplicated stream with an `Idempotency-Key` header, and you get a dashboard to see and replay what happened.
+
+## What it does
+
+- **Sources (inbound).** Each source gets an ingest URL `POST /api/ingest/<slug>` and a secret generated on the server and shown once. Signing schemes:
+  - `hmac-sha256`: `X-Signature: t=<unix>,v1=<hex HMAC of "<t>.<raw body>">`, 5 minute timestamp tolerance, constant-time compare, multiple `v1` values accepted for secret rotation.
+  - `hotmart-hottok`: static token in `X-HOTMART-HOTTOK` (or `?hottok=` for Hotmart v1), constant-time compare.
+  - `none`: accepts anything; flagged in red in the UI.
+- **Ingestion.** Reads the raw body (1 MB limit), verifies, parses JSON, derives an idempotency key (`Idempotency-Key` header, else the payload `id`, else `sha256(source + body)`), extracts the event type from a configurable JSON path (`event` by default), stores the event and answers `202`. Duplicates get `200 {"duplicate": true}` and are not delivered again. Requests that fail verification get `401` and are stored for audit but never delivered.
+- **Destinations (outbound).** Per source: URL, optional event filter (comma-separated types), active toggle, max attempts (default 6) and HTTP timeout. The original payload is forwarded byte for byte with `Idempotency-Key`, `X-Relay-Event-Id`, `X-Relay-Delivery-Id`, `X-Relay-Attempt` and `X-Relay-Event-Type` headers.
+- **Built-in demo sinks** so the demo works without external URLs: `/api/sink/ok` (200), `/api/sink/fail` (500), `/api/sink/flaky` (503 about half the time), `/api/sink/slow` (200 after 3 s), `/api/sink/reject` (400).
+- **Delivery engine.** The first attempt runs right after the `202` with `after()` from `next/server`. Each attempt records status code, latency, the first 500 characters of the response and the error. Failures are retried with exponential backoff and jitter; after max attempts, or on a permanent 4xx, the delivery goes to the dead-letter queue.
+- **Queue worker.** `GET /api/cron/deliver` (Vercel Cron, protected by `CRON_SECRET`) and a "Process queue now" button. Safe to run concurrently: rows are claimed with `FOR UPDATE SKIP LOCKED` on Postgres.
+- **Replay.** Replay one event to one destination (or to all matching destinations), or move all dead letters of a destination back to the queue.
+- **Dashboard** (`/dashboard`): 24h overview (events, delivery success rate, dead letters, p50/p95 latency, hourly volume), events table with filters (source, status, event type, idempotency key search), event detail (headers, pretty JSON with copy, verification result, attempt timeline per destination), destination health, dead-letter queue, and source/destination CRUD through Server Actions with zod validation.
+- **Send test webhook.** Signs a realistic sample (Hotmart `PURCHASE_APPROVED` v2-style payload for hottok sources, a generic `order.paid` otherwise) with the source's own secret, sends it through the ingest pipeline and links to the created event.
+- **Management API** under `/api/v1` (see below).
+- **Sandbox mode.** Without `DATABASE_URL`, an in-memory PGlite database is migrated and seeded at boot with 2 sources, 4 destinations on the demo sinks and 60 events over the last 48 hours with mixed outcomes.
+
+## Architecture
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant P as Platform (Hotmart, checkout, CRM)
+    participant I as POST /api/ingest/[slug]
+    participant DB as Postgres / PGlite
+    participant W as Delivery engine
+    participant D as Destination
+    participant U as Dashboard / API
+
+    P->>I: webhook (raw body + signature)
+    I->>I: verify HMAC or hottok (constant time)
+    alt invalid signature
+        I->>DB: store as rejected (audit only)
+        I-->>P: 401
+    else valid
+        I->>I: parse JSON, derive idempotency key, event type
+        I->>DB: insert event (unique per source + key)
+        alt duplicate key
+            I-->>P: 200 {duplicate: true}
+        else new event
+            I->>DB: one delivery row per matching active destination
+            I-->>P: 202 accepted
+            Note over I,W: after(): first attempt runs once the response is sent
+            W->>DB: claim delivery (status pending → processing)
+            W->>D: POST original payload + Idempotency-Key
+            alt 2xx
+                W->>DB: attempt ok, delivery succeeded
+            else error, timeout or 5xx/408/429
+                W->>DB: attempt failed, next_attempt_at = now + backoff
+                loop cron every minute / "Process queue now"
+                    W->>DB: claim due rows (FOR UPDATE SKIP LOCKED)
+                    W->>D: retry
+                end
+                W->>DB: max attempts reached (or permanent 4xx) → dead_letter
+            end
+        end
+    end
+    U->>DB: replay event / retry all dead letters → pending
+    U->>W: attempt again (same attempt timeline, trigger = replay)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+**Flow in words.** The ingest route does the minimum work needed to safely say "got it": verify, dedupe, persist, enqueue. Everything slow (calling your receivers) happens after the response, so a slow destination never makes the platform time out and retry. Deliveries are rows in Postgres with a status and a `next_attempt_at`, which makes the queue inspectable with plain SQL and lets any number of workers share it.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**Retry schedule** (`base 30s × 4^(n-1)`, capped at 6h, ±20% jitter):
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Failed attempt  | Production wait | Cumulative (no jitter) | Sandbox wait  |
+| --------------- | --------------- | ---------------------- | ------------- |
+| 1               | 30s             | 30s                    | 2s            |
+| 2               | 2m              | 2m 30s                 | 4s            |
+| 3               | 8m              | 10m 30s                | 8s            |
+| 4               | 32m             | 42m 30s                | 16s           |
+| 5               | 2h 8m           | 2h 50m 30s             | 32s           |
+| 6 (default max) | → dead letter   |                        | → dead letter |
+| 7+ (max 12)     | 6h (cap)        |                        | 60s (cap)     |
 
-## Learn More
+Sandbox mode compresses the schedule to seconds (base 2s, factor 2, cap 60s) so you can watch a delivery go from retrying to dead letter in under a minute. 4xx responses other than 408, 425 and 429 are treated as permanent and dead-lettered right away: the receiver understood the request and refused it, so sending the same bytes again will not help.
 
-To learn more about Next.js, take a look at the following resources:
+**Folder structure**
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+app/
+  api/ingest/[sourceSlug]/   inbound webhooks
+  api/sink/[kind]/           built-in demo receivers
+  api/cron/deliver/          queue worker (Vercel Cron)
+  api/v1/events/             management API
+  api/health/                liveness + driver
+  dashboard/                 overview, events, sources, destinations, dead letters
+    actions.ts               Server Actions (zod-validated)
+lib/
+  db/schema.ts, client.ts    Drizzle schema, pg / PGlite handle (globalThis singleton)
+  db/seed.ts                 deterministic sandbox fixture
+  services/ingest.ts         verify → dedupe → store → enqueue
+  services/delivery.ts       claim, attempt, backoff, dead-letter, queue pass
+  services/replay.ts         replay and retry-all
+  signing.ts, idempotency.ts, event-type.ts, backoff.ts, stats.ts
+drizzle/                     generated SQL migrations
+tests/unit, tests/integration, e2e/
+proxy.ts                     optional Basic auth for /dashboard
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Key decisions & trade-offs
 
-## Deploy on Vercel
+- **Postgres as the queue.** No Redis or SQS: deliveries are rows, claimed with `UPDATE … WHERE id IN (SELECT … FOR UPDATE OF deliveries SKIP LOCKED)`. Cron, the "process now" button and `after()` can all run at the same time without double-sending. A row stuck in `processing` for more than 5 minutes (crashed worker) is reclaimed. On PGlite (single connection) the claim is a plain status transition. Throughput is fine for webhook volumes; a high-volume setup would want a dedicated queue.
+- **At-least-once, with the key passed downstream.** A crash between the HTTP call and the database write can resend an attempt, so every outbound request carries `Idempotency-Key`. Exactly-once is not possible across an HTTP boundary; this is the honest version.
+- **Idempotency key order: header → payload `id` → body hash.** Hotmart puts a unique `id` on every event, so retries of the same event dedupe even when the signature timestamp changes. The body hash is the fallback for senders that give you nothing. The unique index is partial (`WHERE verified`), so a forged request can never "burn" the key of a real event.
+- **Rejected requests are kept, not delivered.** Helpful for debugging a misconfigured sender (wrong secret, clock skew). Stored bodies are truncated to 16 KB and secrets in headers are redacted.
+- **Drizzle + one schema, two drivers.** `pg` when `DATABASE_URL` is set, PGlite (Postgres compiled to WASM) otherwise. Same SQL, same migrations, so the integration tests run against real Postgres semantics without Docker.
+- **Sandbox details for serverless.** The PGlite instance lives on `globalThis` so it survives across requests on a warm instance. "Send test webhook" calls the ingest pipeline in-process in sandbox mode (an HTTP call could land on a different instance with a different in-memory database); with a real database it is a real HTTP POST to the ingest URL. Dashboard page views also run a small queue pass in sandbox mode for the same reason.
+- **Replays reset the delivery in place.** The attempt cycle goes back to zero and `replay_count` increments, so the full history (failed attempts, then the replay) stays on one timeline instead of being spread across copies.
+- **Secrets stored in plain text.** HMAC verification needs the original secret, so it cannot be hashed. The UI shows it once on creation or rotation. Encrypting it at rest is on the roadmap.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Stack
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Next.js 16 (App Router, Server Actions, `after()`, `proxy.ts`), React 19, TypeScript (strict), Tailwind CSS v4, Drizzle ORM, `pg` / `@electric-sql/pglite`, zod 4, Vitest, Playwright.
+
+## Running locally
+
+Prerequisites: Node 22+ and npm.
+
+```bash
+npm install
+cp .env.example .env.local   # optional, everything works with it empty
+npm run dev                  # http://localhost:3101
+```
+
+With no `DATABASE_URL` the app starts in sandbox mode. To use Postgres:
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/webhook_relay npm run db:migrate
+DATABASE_URL=... RELAY_ADMIN_TOKEN=$(openssl rand -hex 32) npm run dev
+```
+
+| Variable              | Purpose                                                                                                                                  |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`        | Postgres connection string. Empty = sandbox (PGlite in memory, seeded, resets on restart).                                               |
+| `RELAY_ADMIN_TOKEN`   | Bearer token for `/api/v1/*` and Basic auth password for `/dashboard`. Required with a real database (the API fails closed without it). |
+| `CRON_SECRET`         | Vercel Cron sends it as a bearer token to `/api/cron/deliver`. Empty = endpoint open.                                                    |
+| `NEXT_PUBLIC_APP_URL` | Public base URL, used to resolve `/api/sink/*` destinations when there is no request to derive it from.                                  |
+
+Sending a signed webhook by hand (HMAC source):
+
+```bash
+BODY='{"id":"evt_123","event":"order.paid"}'
+TS=$(date +%s)
+SIG=$(printf '%s' "$TS.$BODY" | openssl dgst -sha256 -hmac "$SECRET" -hex | sed 's/^.* //')
+curl -X POST http://localhost:3101/api/ingest/store-checkout \
+  -H 'content-type: application/json' -H "x-signature: t=$TS,v1=$SIG" -d "$BODY"
+```
+
+The seeded sources get random secrets at boot; use "Rotate secret" on the source page to get one you can copy.
+
+Tests:
+
+```bash
+npm run lint
+npm run typecheck
+npm test             # unit + integration (PGlite, no Docker needed)
+npx playwright install chromium
+npm run test:e2e     # starts or reuses the dev server on :3101
+```
+
+### Management API
+
+All `/api/v1` endpoints require `Authorization: Bearer $RELAY_ADMIN_TOKEN` when the token is set. In sandbox mode without a token they are open and responses carry `x-relay-auth: open-sandbox`.
+
+| Method | Path                         | Description                                                                                                                                                                                                |
+| ------ | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/v1/events`             | List events. Query: `source` (id), `status` (`pending`, `delivered`, `dead_letter`, `rejected`, `no_destinations`), `type`, `q` (idempotency key contains), `page`, `page_size` (max 200). Returns `{ data, page, pageSize, total }`. |
+| `GET`  | `/api/v1/events/{id}`        | Event with headers, payload, verification result and every delivery with its attempts.                                                                                                                     |
+| `POST` | `/api/v1/events/{id}/replay` | Body `{ "destinationId"?: string }`. Re-queues the event (one destination, or all matching ones) and attempts right away. `202 { queued, deliveryIds }`. `409` for rejected events.                        |
+| `POST` | `/api/ingest/{slug}`         | Ingest endpoint. `202` accepted, `200` duplicate, `401` bad signature, `400` invalid JSON, `404` unknown source, `413` over 1 MB.                                                                         |
+| `GET`  | `/api/cron/deliver`          | One queue pass (up to 50 due deliveries). Bearer `CRON_SECRET` when set.                                                                                                                                   |
+| `GET`  | `/api/health`                | `{ ok, driver }`.                                                                                                                                                                                          |
+
+## Demo & limitations
+
+- The public demo runs in sandbox mode: data lives in memory and resets on every cold start. Different serverless instances can show different data.
+- No user accounts. With `RELAY_ADMIN_TOKEN` set, the dashboard is behind HTTP Basic auth; without it (the demo), anyone can create sources and destinations.
+- `vercel.json` schedules the worker every minute, which needs a Vercel Pro plan. Hobby only allows daily crons and rejects the deployment otherwise; change the schedule to `0 0 * * *` there and rely on `after()` plus "Process queue now" (and, in sandbox mode, dashboard page views) for retries.
+- Destination URLs are checked against obviously private hosts (localhost, RFC 1918, link-local) in production. This is a literal-host check; DNS rebinding is not handled, so do not expose the dashboard to untrusted users with a real database.
+- Latency percentiles are computed in the app over the most recent 10,000 attempts of the window, which is fine at this scale but not for millions of rows.
+- Outbound requests are not signed yet, so receivers cannot verify they came from the relay (beyond network controls).
+
+## Roadmap
+
+- Sign outbound deliveries (HMAC per destination) so receivers can verify the relay.
+- Encrypt source secrets at rest and support two active secrets during rotation.
+- Payload transforms per destination (field mapping, e.g. Hotmart → CRM format).
+- Retention policy for events and attempts, plus percentile queries in SQL.
+- Per-destination rate limiting and a circuit breaker that pauses a destination after repeated failures.
+- Alerts (email or Slack) when the dead-letter queue grows.
+
+## License
+
+[MIT](LICENSE) © 2026 Cristhian Almeida
