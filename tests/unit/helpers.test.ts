@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveBaseUrl } from "@/lib/env";
 import { backoffDelayMs, backoffSchedule, formatDuration, PRODUCTION_BACKOFF, SANDBOX_BACKOFF } from "@/lib/backoff";
 import { extractEventType, matchesFilter, parseEventFilter } from "@/lib/event-type";
 import { deriveIdempotencyKey } from "@/lib/idempotency";
 import { percentile, successRate } from "@/lib/stats";
 import { computeEventStatus, isRetryableStatus, resolveTargetUrl } from "@/lib/services/delivery";
 import { healthLabel } from "@/lib/queries";
+import { isProtectedSource } from "@/lib/services/sources";
 
 describe("backoff", () => {
   it("follows base 30s, factor 4, capped at 6h", () => {
@@ -150,21 +152,31 @@ describe("delivery rules", () => {
   });
 });
 
-describe("destination URL validation", () => {
-  it("accepts built-in sinks and public URLs", async () => {
-    const { validateDestinationUrl } = await import("@/lib/validation");
-    expect(validateDestinationUrl("/api/sink/ok", false)).toBeNull();
-    expect(validateDestinationUrl("https://api.example.com/hooks", false)).toBeNull();
+
+describe("sandbox protections", () => {
+  it("treats the seeded demo sources as read-only only in sandbox mode", () => {
+    expect(isProtectedSource("hotmart", true)).toBe(true);
+    expect(isProtectedSource("store-checkout", true)).toBe(true);
+    expect(isProtectedSource("my-source", true)).toBe(false);
+    expect(isProtectedSource("hotmart", false)).toBe(false);
   });
 
-  it("rejects unknown sinks, bad schemes, credentials and private hosts in production", async () => {
-    const { validateDestinationUrl } = await import("@/lib/validation");
-    expect(validateDestinationUrl("/api/sink/nope", false)).toMatch(/built-in sink/);
-    expect(validateDestinationUrl("ftp://example.com", false)).toMatch(/http/);
-    expect(validateDestinationUrl("https://user:pw@example.com", false)).toMatch(/Credentials/);
-    for (const host of ["http://localhost:3000", "http://127.0.0.1", "http://10.0.0.5", "http://192.168.1.2", "http://169.254.169.254", "http://[::1]"]) {
-      expect(validateDestinationUrl(host, false)).toMatch(/Private/);
-    }
-    expect(validateDestinationUrl("http://localhost:4000/hook", true)).toBeNull();
+  it("does not retry redirects", () => {
+    expect(isRetryableStatus(301)).toBe(false);
+    expect(isRetryableStatus(302)).toBe(false);
+  });
+});
+
+describe("base URL precedence", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("prefers configured URLs over the client-controlled request origin", () => {
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://relay.example.com/");
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "webhook-relay.vercel.app");
+    expect(resolveBaseUrl("https://evil.example")).toBe("https://relay.example.com");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
+    expect(resolveBaseUrl("https://evil.example")).toBe("https://webhook-relay.vercel.app");
+    vi.stubEnv("VERCEL_PROJECT_PRODUCTION_URL", "");
+    expect(resolveBaseUrl("http://localhost:3101")).toBe("http://localhost:3101");
   });
 });

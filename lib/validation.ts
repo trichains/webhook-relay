@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { SIGNING_SCHEMES } from "@/lib/db/schema";
-import { isSinkKind } from "@/lib/sinks";
+import { env } from "@/lib/env";
+import { validateDestinationUrl, type UrlPolicy } from "@/lib/ssrf";
 
 export function slugify(value: string): string {
   return value
@@ -12,47 +13,9 @@ export function slugify(value: string): string {
     .slice(0, 48);
 }
 
-const PRIVATE_HOST = [
-  /^localhost$/i,
-  /\.localhost$/i,
-  /\.local$/i,
-  /\.internal$/i,
-  /^127\./,
-  /^10\./,
-  /^192\.168\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^169\.254\./,
-  /^0\./,
-  /^\[?::1\]?$/,
-  /^\[?f[cd][0-9a-f]{2}:/i,
-  /^\[?fe80:/i,
-];
-
-/**
- * Destination URL rules:
- * - `/api/sink/<kind>` → one of the built-in demo receivers on this deployment.
- * - otherwise an absolute http(s) URL. In production, hosts that are obviously private
- *   (localhost, RFC 1918, link-local) are refused to limit SSRF from the dashboard.
- *   This is a literal-host check only; DNS rebinding is out of scope (see README).
- */
-export function validateDestinationUrl(raw: string, allowPrivate = process.env.NODE_ENV !== "production"): string | null {
-  const value = raw.trim();
-  if (value.startsWith("/")) {
-    const match = /^\/api\/sink\/([a-z]+)$/.exec(value);
-    return match && isSinkKind(match[1]) ? null : "Relative URLs must be a built-in sink: /api/sink/ok, fail, flaky, slow or reject";
-  }
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    return "Enter a full URL (https://…) or a built-in sink path (/api/sink/ok)";
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") return "Only http and https URLs are supported";
-  if (url.username || url.password) return "Credentials in the URL are not allowed; use a token in the receiver instead";
-  if (!allowPrivate && PRIVATE_HOST.some((re) => re.test(url.hostname))) {
-    return "Private and loopback hosts are not allowed in production";
-  }
-  return null;
+/** Destination URL policy for the current environment (see lib/ssrf.ts). */
+export function currentUrlPolicy(): UrlPolicy {
+  return { sandbox: env.isSandbox, allowPrivate: !env.isSandbox && process.env.NODE_ENV !== "production" };
 }
 
 const optionalText = z
@@ -91,7 +54,7 @@ export const destinationSchema = z.object({
     .min(1, "URL is required")
     .max(2000)
     .superRefine((value, ctx) => {
-      const error = validateDestinationUrl(value);
+      const error = validateDestinationUrl(value, currentUrlPolicy());
       if (error) ctx.addIssue({ code: "custom", message: error });
     }),
   eventFilter: optionalText.pipe(

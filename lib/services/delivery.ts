@@ -13,6 +13,8 @@ import {
 } from "@/lib/db/schema";
 import { env } from "@/lib/env";
 import { log } from "@/lib/log";
+import { checkOutboundUrl, type LookupFn, type UrlPolicy } from "@/lib/ssrf";
+import { currentUrlPolicy } from "@/lib/validation";
 
 export const RESPONSE_SNIPPET_LIMIT = 500;
 /** A row stuck in `processing` longer than this is considered abandoned (crashed worker) and reclaimed. */
@@ -25,7 +27,14 @@ export type EngineOptions = {
   backoff?: BackoffConfig;
   now?: () => Date;
   random?: () => number;
+  /** Outbound URL policy; defaults to the environment (sandbox = built-in sinks only). */
+  urlPolicy?: UrlPolicy;
+  /** DNS resolver used for the private-address check (injectable for tests). */
+  lookup?: LookupFn;
 };
+
+/** A row this worker owns: the lock timestamp it wrote is the ownership token. */
+export type Claim = { id: string; lockedAt: Date };
 
 export type AttemptOutcome = {
   deliveryId: string;
@@ -50,6 +59,7 @@ export function resolveTargetUrl(url: string, baseUrl: string): string {
  */
 export function isRetryableStatus(statusCode: number | null): boolean {
   if (statusCode === null) return true; // network error / timeout
+  if (statusCode >= 300 && statusCode < 400) return false; // redirects are not followed
   if (statusCode >= 400 && statusCode < 500) return [408, 425, 429].includes(statusCode);
   return true;
 }
@@ -98,12 +108,13 @@ async function performHttp(
     const text = await res.text().catch(() => "");
     const latencyMs = Math.round(performance.now() - started);
     const ok = res.status >= 200 && res.status < 300;
+    const redirect = res.status >= 300 && res.status < 400;
     return {
       ok,
       statusCode: res.status,
       latencyMs,
       snippet: text.slice(0, RESPONSE_SNIPPET_LIMIT) || null,
-      error: ok ? null : `HTTP ${res.status}`,
+      error: ok ? null : redirect ? `redirect not followed (HTTP ${res.status})` : `HTTP ${res.status}`,
     };
   } catch (err) {
     const latencyMs = Math.round(performance.now() - started);
@@ -122,13 +133,13 @@ async function performHttp(
  * Atomically moves one pending delivery to `processing`. Works the same on Postgres and
  * PGlite because a single UPDATE ... WHERE status = 'pending' is atomic.
  */
-export async function claimDelivery(db: Db, deliveryId: string, now = new Date()): Promise<boolean> {
+export async function claimDelivery(db: Db, deliveryId: string, now = new Date()): Promise<Claim | null> {
   const rows = await db
     .update(deliveries)
     .set({ status: "processing", lockedAt: now, updatedAt: now })
     .where(and(eq(deliveries.id, deliveryId), eq(deliveries.status, "pending")))
     .returning({ id: deliveries.id });
-  return rows.length > 0;
+  return rows.length > 0 ? { id: deliveryId, lockedAt: now } : null;
 }
 
 /**
@@ -139,7 +150,7 @@ export async function claimDelivery(db: Db, deliveryId: string, now = new Date()
  *   UPDATE is enough.
  * Rows stuck in `processing` for longer than STALE_LOCK_MS are reclaimed.
  */
-export async function claimDueDeliveries(handle: DbHandle, limit: number, now = new Date()): Promise<string[]> {
+export async function claimDueDeliveries(handle: DbHandle, limit: number, now = new Date()): Promise<Claim[]> {
   const { db } = handle;
   const staleBefore = new Date(now.getTime() - STALE_LOCK_MS);
   const due = db
@@ -165,11 +176,12 @@ export async function claimDueDeliveries(handle: DbHandle, limit: number, now = 
     .set({ status: "processing", lockedAt: now, updatedAt: now })
     .where(inArray(deliveries.id, candidates))
     .returning({ id: deliveries.id });
-  return rows.map((r) => r.id);
+  return rows.map((r) => ({ id: r.id, lockedAt: now }));
 }
 
 /** Runs one HTTP attempt for a delivery that this worker has already claimed. */
-export async function attemptClaimedDelivery(db: Db, deliveryId: string, opts: EngineOptions): Promise<AttemptOutcome | null> {
+export async function attemptClaimedDelivery(db: Db, claim: Claim, opts: EngineOptions): Promise<AttemptOutcome | null> {
+  const deliveryId = claim.id;
   const now = opts.now ?? (() => new Date());
   const fetchImpl = opts.fetchImpl ?? fetch;
   const backoff = opts.backoff ?? defaultBackoff();
@@ -193,7 +205,12 @@ export async function attemptClaimedDelivery(db: Db, deliveryId: string, opts: E
 
   const targetUrl = resolveTargetUrl(destination.url, opts.baseUrl);
   const startedAt = now();
-  const result = await performHttp(
+  // Policy check right before the request: the stored URL may predate a policy change, and in
+  // real mode the hostname is resolved and every address checked against private ranges.
+  const block = await checkOutboundUrl(destination.url, opts.urlPolicy ?? currentUrlPolicy(), opts.lookup);
+  const result: HttpResult = block
+    ? { ok: false, statusCode: null, latencyMs: 0, snippet: null, error: block.error }
+    : await performHttp(
     targetUrl,
     {
       // The original payload is forwarded byte-for-byte.
@@ -217,11 +234,31 @@ export async function attemptClaimedDelivery(db: Db, deliveryId: string, opts: E
   let nextAttemptAt = delivery.nextAttemptAt;
   if (result.ok) {
     status = "succeeded";
-  } else if (!isRetryableStatus(result.statusCode) || cycleAttempts >= destination.maxAttempts) {
+  } else if (block?.permanent || !isRetryableStatus(result.statusCode) || cycleAttempts >= destination.maxAttempts) {
     status = "dead_letter";
   } else {
     status = "pending";
     nextAttemptAt = new Date(now().getTime() + backoffDelayMs(cycleAttempts, backoff, opts.random));
+  }
+
+  // Guarded write: only the worker that still owns the lock may record the outcome. If the row
+  // was reclaimed as stale by another worker meanwhile, this attempt is dropped (logged only).
+  const owned = await db
+    .update(deliveries)
+    .set({
+      status,
+      attemptCount: cycleAttempts,
+      nextAttemptAt,
+      lockedAt: null,
+      lastStatusCode: result.statusCode,
+      lastError: result.error,
+      updatedAt: now(),
+    })
+    .where(and(eq(deliveries.id, deliveryId), eq(deliveries.status, "processing"), eq(deliveries.lockedAt, claim.lockedAt)))
+    .returning({ id: deliveries.id });
+  if (owned.length === 0) {
+    log("warn", "delivery.lock_lost", { deliveryId, attempt: attemptNumber, statusCode: result.statusCode });
+    return null;
   }
 
   await db.insert(attempts).values({
@@ -235,18 +272,6 @@ export async function attemptClaimedDelivery(db: Db, deliveryId: string, opts: E
     error: result.error,
     startedAt,
   });
-  await db
-    .update(deliveries)
-    .set({
-      status,
-      attemptCount: cycleAttempts,
-      nextAttemptAt,
-      lockedAt: null,
-      lastStatusCode: result.statusCode,
-      lastError: result.error,
-      updatedAt: now(),
-    })
-    .where(eq(deliveries.id, deliveryId));
   await refreshEventStatus(db, event.id);
 
   log(result.ok ? "info" : "warn", "delivery.attempt", {
@@ -298,11 +323,12 @@ function summarize(outcomes: (AttemptOutcome | null)[], claimed: number): Proces
 
 /** Claims and attempts specific deliveries right away (used after ingest and replay). */
 export async function deliverNow(handle: DbHandle, deliveryIds: string[], opts: EngineOptions): Promise<ProcessSummary> {
-  const claimed: string[] = [];
+  const claimed: Claim[] = [];
   for (const id of deliveryIds) {
-    if (await claimDelivery(handle.db, id, opts.now?.() ?? new Date())) claimed.push(id);
+    const claim = await claimDelivery(handle.db, id, opts.now?.() ?? new Date());
+    if (claim) claimed.push(claim);
   }
-  const outcomes = await runWithConcurrency(claimed, 5, (id) => attemptClaimedDelivery(handle.db, id, opts));
+  const outcomes = await runWithConcurrency(claimed, 5, (claim) => attemptClaimedDelivery(handle.db, claim, opts));
   return summarize(outcomes, claimed.length);
 }
 
@@ -312,7 +338,7 @@ export async function processQueue(
   opts: EngineOptions & { limit?: number },
 ): Promise<ProcessSummary> {
   const ids = await claimDueDeliveries(handle, opts.limit ?? 25, opts.now?.() ?? new Date());
-  const outcomes = await runWithConcurrency(ids, 5, (id) => attemptClaimedDelivery(handle.db, id, opts));
+  const outcomes = await runWithConcurrency(ids, 5, (claim) => attemptClaimedDelivery(handle.db, claim, opts));
   const summary = summarize(outcomes, ids.length);
   if (ids.length > 0) log("info", "queue.processed", summary);
   return summary;
