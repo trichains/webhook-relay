@@ -5,7 +5,10 @@ import { processQueue } from "@/lib/services/delivery";
 
 export const maxDuration = 60;
 
-/** Queue worker entry point. Vercel Cron calls it every minute (see vercel.json). */
+/**
+ * Queue worker entry point. vercel.json ships with a daily schedule (the Vercel Hobby limit);
+ * on Pro set it to "* * * * *" so retries follow the backoff schedule closely.
+ */
 export async function GET(request: Request) {
   const denied = requireCron(request);
   if (denied) return denied;

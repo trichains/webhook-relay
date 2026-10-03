@@ -19,11 +19,42 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # npm install instead of npm ci: the lockfile is generated on Windows and lacks Linux-only optional wasm deps (@emnapi/*).
+      - run: npm install --no-audit --no-fund
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  test-postgres:
+    name: Tests against Postgres 16
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay
+          POSTGRES_DB: relay_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U relay"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Same suite, real Postgres: exercises the node-postgres driver and FOR UPDATE SKIP LOCKED.
+      DATABASE_URL: postgres://relay:relay@localhost:5432/relay_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # npm install instead of npm ci: the lockfile is generated on Windows and lacks Linux-only optional wasm deps (@emnapi/*).
+      - run: npm install --no-audit --no-fund
+      - run: npm test
 
   e2e:
     name: Playwright (chromium)
@@ -35,7 +66,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      # npm install instead of npm ci: the lockfile is generated on Windows and lacks Linux-only optional wasm deps (@emnapi/*).
+      - run: npm install --no-audit --no-fund
       - run: npx playwright install --with-deps chromium
       - run: npm run build
       - run: npm run test:e2e

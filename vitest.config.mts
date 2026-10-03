@@ -10,5 +10,7 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     testTimeout: 30_000,
     hookTimeout: 60_000,
+    // Against a shared Postgres (DATABASE_URL) test files must not truncate each other's tables.
+    fileParallelism: !process.env.DATABASE_URL,
   },
 });
