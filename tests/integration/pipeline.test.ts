@@ -10,7 +10,7 @@ import { buildTestRequest } from "@/lib/services/test-webhook";
 import { signHmac } from "@/lib/signing";
 import { isSinkKind, sinkResponse } from "@/lib/sinks";
 import { seedDatabase } from "@/lib/db/seed";
-import { getOverview, listEvents } from "@/lib/queries";
+import { getDestinationsHealth, getOverview, listEvents, listSources } from "@/lib/queries";
 
 const BASE = "http://relay.test";
 const SECRET = "whsec_integration";
@@ -281,5 +281,14 @@ describe("sandbox seed", () => {
     expect(overview.p95).not.toBeNull();
     const { total } = await listEvents(handle.db, { status: "rejected" });
     expect(total).toBeGreaterThan(0);
+
+    const sourceRows = await listSources(handle.db);
+    expect(sourceRows.map((s) => s.destinationCount)).toEqual([2, 2]);
+    expect(sourceRows.reduce((t, s) => t + s.events24h, 0)).toBe(overview.events24h);
+    const delivered = await listEvents(handle.db, { status: "delivered", pageSize: 5 });
+    expect(delivered.rows.every((r) => r.deliveryCount > 0)).toBe(true);
+    const health = await getDestinationsHealth(handle.db);
+    expect(health).toHaveLength(4);
+    expect(health.find((h) => h.destination.url === "/api/sink/fail")?.deadLetters).toBeGreaterThan(0);
   });
 });

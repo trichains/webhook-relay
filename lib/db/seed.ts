@@ -67,7 +67,9 @@ export async function seedDatabase(db: Db, now = new Date()) {
     { id: crypto.randomUUID(), sourceId: hotmart.id, name: "Member area provisioning", url: "/api/sink/slow", eventFilter: "PURCHASE_APPROVED,PURCHASE_COMPLETE", maxAttempts: 6, timeoutMs: 10000, kind: "slow" as SinkKind },
     { id: crypto.randomUUID(), sourceId: hotmart.id, name: "Refund handler (legacy ERP)", url: "/api/sink/fail", eventFilter: "PURCHASE_CANCELED,PURCHASE_REFUNDED,PURCHASE_CHARGEBACK", maxAttempts: 4, timeoutMs: 10000, kind: "fail" as SinkKind },
   ];
-  await db.insert(destinations).values(dests.map(({ kind: _kind, ...d }) => d));
+  await db.insert(destinations).values(
+    dests.map((d) => ({ id: d.id, sourceId: d.sourceId, name: d.name, url: d.url, eventFilter: d.eventFilter, maxAttempts: d.maxAttempts, timeoutMs: d.timeoutMs })),
+  );
 
   const eventRows: (typeof events.$inferInsert)[] = [];
   const deliveryRows: (typeof deliveries.$inferInsert)[] = [];

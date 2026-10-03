@@ -129,7 +129,8 @@ export async function listEvents(db: Db, filters: EventFilters) {
         receivedAt: events.receivedAt,
         sourceId: sources.id,
         sourceName: sources.name,
-        deliveryCount: sql<number>`(select count(*)::int from ${deliveries} where ${deliveries.eventId} = ${events.id})`,
+        // Raw, table-qualified SQL: drizzle renders bare column names inside selected sql fragments.
+        deliveryCount: sql<number>`(select count(*)::int from "deliveries" d where d."event_id" = "events"."id")`,
       })
       .from(events)
       .innerJoin(sources, eq(sources.id, events.sourceId))
@@ -208,8 +209,8 @@ export async function listSources(db: Db, now = new Date()) {
       slug: sources.slug,
       scheme: sources.scheme,
       createdAt: sources.createdAt,
-      destinationCount: sql<number>`(select count(*)::int from ${destinations} where ${destinations.sourceId} = ${sources.id})`,
-      events24h: sql<number>`(select count(*)::int from ${events} where ${events.sourceId} = ${sources.id} and ${events.receivedAt} >= ${since.toISOString()})`,
+      destinationCount: sql<number>`(select count(*)::int from "destinations" d where d."source_id" = "sources"."id")`,
+      events24h: sql<number>`(select count(*)::int from "events" e where e."source_id" = "sources"."id" and e."received_at" >= ${since.toISOString()})`,
     })
     .from(sources)
     .orderBy(asc(sources.createdAt), asc(sources.name));
