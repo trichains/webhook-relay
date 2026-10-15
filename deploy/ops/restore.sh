@@ -2,7 +2,7 @@
 # Restores a dump produced by backup.sh into $PGDATABASE. Drops and recreates the objects the dump
 # contains in a single transaction: either everything is restored or nothing changes.
 set -euo pipefail
-OPS_SERVICE=backup
+export OPS_SERVICE=backup
 source /ops/common.sh
 
 file=${1:?usage: restore.sh /backups/<file>.dump}

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154 # health_*/ingest_* come from eval of load_stop output
 # Automatic rollback test: deploy an image that crashes on boot, under load. deploy.sh must
 # refuse to switch, exit non-zero, and the live version must keep serving without errors.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"

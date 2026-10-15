@@ -2,7 +2,7 @@
 # Queue worker trigger: replaces Vercel Cron when self-hosting. Calls /api/cron/deliver through the
 # proxy's internal listener, so it always reaches whichever color (blue/green) is live.
 set -uo pipefail
-OPS_SERVICE=scheduler
+export OPS_SERVICE=scheduler
 source /ops/common.sh
 
 URL=${CRON_URL:-http://caddy:8080/api/cron/deliver}

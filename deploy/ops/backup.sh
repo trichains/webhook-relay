@@ -2,7 +2,7 @@
 # One backup: pg_dump (custom format) -> verify it is readable -> atomic rename -> checksum ->
 # retention (keep the newest BACKUP_KEEP dumps). Prints the backup path on stdout on success.
 set -euo pipefail
-OPS_SERVICE=backup
+export OPS_SERVICE=backup
 source /ops/common.sh
 
 DIR=${BACKUP_DIR:-/backups}

@@ -6,7 +6,7 @@ BASE_URL=${BASE_URL:-https://localhost}
 CI_SOURCE=ci-smoke
 CI_SECRET=$(env_get CI_SOURCE_SECRET)
 ADMIN_TOKEN=$(env_get RELAY_ADMIN_TOKEN)
-SUMMARY=${GITHUB_STEP_SUMMARY:-/dev/stderr}
+export SUMMARY=${GITHUB_STEP_SUMMARY:-/dev/stderr}
 
 psql_q() { dc exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -X -v ON_ERROR_STOP=1 "$@"' psql "$@"; }
 

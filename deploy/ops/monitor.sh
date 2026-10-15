@@ -7,7 +7,7 @@
 # Slack-style hooks read `text`, custom receivers get status/check/message. ALERT_FORMAT=text posts
 # plain text, which is what ntfy expects (POST https://ntfy.sh/<topic>).
 set -uo pipefail
-OPS_SERVICE=monitor
+export OPS_SERVICE=monitor
 source /ops/common.sh
 
 INTERVAL=${MONITOR_INTERVAL_SECONDS:-30}

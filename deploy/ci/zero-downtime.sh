@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2154 # health_*/ingest_* come from eval of load_stop output
 # Zero-downtime test: continuous HTTPS traffic (health + signed ingest) while deploy.sh moves the
 # stack to a new version. Any non-2xx response or timeout fails the job.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"

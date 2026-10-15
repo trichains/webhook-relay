@@ -2,7 +2,7 @@
 # Scheduled backups. A failure is logged and retried on the next tick; the monitor alerts when
 # the newest dump gets older than BACKUP_MAX_AGE_SECONDS.
 set -uo pipefail
-OPS_SERVICE=backup
+export OPS_SERVICE=backup
 source /ops/common.sh
 
 INTERVAL=${BACKUP_INTERVAL_SECONDS:-86400}

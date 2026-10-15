@@ -4,6 +4,7 @@ set -euo pipefail
 
 DEPLOY_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REPO_ROOT=$(cd "$DEPLOY_DIR/.." && pwd)
+export REPO_ROOT # used by deploy.sh (sourced)
 RUNTIME_DIR="$DEPLOY_DIR/runtime"
 STATE_FILE="$RUNTIME_DIR/state.env"
 UPSTREAM_FILE="$RUNTIME_DIR/caddy/upstream.caddy"
