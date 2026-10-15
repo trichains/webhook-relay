@@ -5,6 +5,7 @@
 Um gateway de webhooks para plataformas de pagamento e vendas. Ele verifica assinaturas, deduplica eventos, refaz entregas que falharam com backoff exponencial, mantém um log de auditoria pesquisável e permite reenviar qualquer coisa a partir de uma fila de dead-letter. É um app Next.js com dashboard e uma pequena API de gestão.
 
 [![CI](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml)
+[![Self-hosting](https://github.com/trichains/webhook-relay/actions/workflows/selfhost.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/selfhost.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Demo](https://img.shields.io/badge/demo-live-f2884b.svg)](https://webhook-relay-gray.vercel.app)
 
@@ -204,7 +205,30 @@ Todos os endpoints de `/api/v1` exigem `Authorization: Bearer $RELAY_ADMIN_TOKEN
 | `POST` | `/api/v1/events/{id}/replay` | Corpo `{ "destinationId"?: string }`. Reenfileira o evento (uma destination, ou todas as que batem) e já tenta entregar. `202 { queued, deliveryIds }`. `409` para eventos rejeitados.                                                     |
 | `POST` | `/api/ingest/{slug}`         | Endpoint de ingest. `202` aceito, `200` duplicata, `401` assinatura inválida, `400` JSON inválido, `404` source desconhecida, `413` acima de 1 MB.                                                                                          |
 | `GET`  | `/api/cron/deliver`          | Uma passada na fila (até 50 entregas vencidas). Bearer `CRON_SECRET` quando definido.                                                                                                                                                      |
-| `GET`  | `/api/health`                | `{ ok, driver }`.                                                                                                                                                                                                                          |
+| `GET`  | `/api/health`                | `{ ok, driver, version? }` (`version` quando `APP_VERSION` está definido, como na imagem Docker).                                                                                                                                                                                                                          |
+
+## Self-hosting (Docker)
+
+Além da Vercel, o repositório traz um kit para rodar o relay no seu próprio servidor Linux: imagem
+Docker multi-stage (Next standalone, usuário não-root, health check), stack compose com Postgres
+17, Caddy (HTTPS automático), containers blue-green do app, um scheduler que substitui o Vercel
+Cron, backups agendados com `pg_dump` e retenção, e um monitor que manda alertas com debounce para
+um webhook (Discord, estilo Slack ou ntfy).
+
+```bash
+cd deploy && cp .env.example .env    # domínio, segredos, webhook de alerta
+./scripts/deploy.sh --build v1       # deploy blue-green com rollback automático
+./scripts/backup.sh                  # também agendado; restore.sh traz um de volta
+./scripts/diagnose.sh                # retrato do incidente, só leitura
+```
+
+O [workflow Self-hosting](.github/workflows/selfhost.yml) sobe essa stack em todo PR (CA interna
+do Caddy no runner) e testa de fora: webhook assinado entregue de ponta a ponta, deploy v1 → v2
+com tráfego HTTPS contínuo e zero requisições com erro, uma release que quebra no boot revertida
+automaticamente, backup → apagar → restore com as contagens batendo, e uma queda que gera
+exatamente um alerta e um "resolved". É um kit testado e um laboratório, não um serviço
+gerenciado. Guia: [docs/self-hosting.pt-BR.md](docs/self-hosting.pt-BR.md) ·
+runbook: [docs/runbook.pt-BR.md](docs/runbook.pt-BR.md).
 
 ## Demo e limitações
 
