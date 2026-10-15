@@ -49,6 +49,9 @@ docker inspect -f '{{.State.OOMKilled}} {{.RestartCount}} {{.State.ExitCode}}' $
   or a hand-edited file).
 - The app is up but `/api/health` fails because the database is down (then the app answers 503,
   not 502; see section 3).
+- Every request gets `503 maintenance: restore in progress`: a `restore.sh` was interrupted and
+  `upstream.caddy` still starts with `MAINTENANCE`. Check that no restore is still running,
+  then `./scripts/deploy.sh --repoint`.
 
 **Fix.** If a deploy just happened: `./scripts/deploy.sh --rollback`. If the live color is
 stopped: `./scripts/dc.sh start app_<color>`. OOM: raise the server's memory or add a
@@ -73,8 +76,8 @@ hand-edit it.
 ```
 
 **Probable causes.**
-- Scheduler container stopped (someone ran `dc.sh stop scheduler`, or a restore was interrupted
-  before resuming it).
+- Scheduler container stopped (someone ran `dc.sh stop scheduler`), or the proxy is still in
+  maintenance after an interrupted restore (section 1): the scheduler goes through it.
 - `scheduler.tick_failed status=401`: `CRON_SECRET` differs between the scheduler and the app
   (changed `.env` but only one side was recreated).
 - `status=502/000`: the scheduler goes through Caddy's internal listener, so a proxy/app problem
@@ -185,7 +188,8 @@ never delete `caddy_data` as a "fix".
 ./scripts/dc.sh logs --no-log-prefix app_green | tail -100
 docker inspect -f '{{json .State.Health}}' $(docker ps -aqf label=com.docker.compose.service=app_green) | jq
 ./scripts/dc.sh run --rm -T migrate                # do migrations apply cleanly?
-./scripts/dc.sh config | grep -A12 'app_green:'    # the env the container actually received
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(docker ps -aqf label=com.docker.compose.service=app_green) \
+  | sed -E 's/(PASSWORD|TOKEN|SECRET|DATABASE_URL)=.*/\1=***/'   # env it received, secrets masked
 ```
 
 **Probable causes.**

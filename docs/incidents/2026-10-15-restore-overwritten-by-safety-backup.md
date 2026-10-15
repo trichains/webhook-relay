@@ -60,6 +60,17 @@ likely to exist.
 - The header of `restore.sh` explains why the pin exists and links here, so nobody "simplifies"
   it away.
 
+## Follow-up (independent review of the fix, same day)
+
+A review of the kit found two related gaps, fixed in the same PR:
+
+- The safety backup still ran retention, so with `BACKUP_KEEP` dumps on disk, restoring the
+  oldest one deleted it. The safety backup now skips retention (`backup.sh --no-prune`), and a
+  failed restore keeps the pinned copy.
+- Webhooks accepted between the safety backup and the end of the restore were in neither. The
+  proxy now answers `503` + `Retry-After` during a restore (senders retry later); CI checks that a
+  webhook sent mid-restore gets 503.
+
 ## Lesson
 
 "The restore succeeded" only means the tool ran. The lab compared row counts before and after,

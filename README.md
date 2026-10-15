@@ -225,7 +225,7 @@ cd deploy && cp .env.example .env    # domain, secrets, alert webhook
 The [Self-hosting workflow](.github/workflows/selfhost.yml) brings this stack up on every PR
 (Caddy internal CA on the runner) and checks it from outside: signed webhook delivered end to end,
 a v1 → v2 deploy under continuous HTTPS traffic with zero failed requests, a release that crashes
-on boot rolled back automatically, backup → wipe → restore with matching row counts, and an
+on boot refused automatically (the proxy never switches), backup → wipe → restore with matching row counts, and an
 outage that produces exactly one alert and one "resolved". It is a tested kit and a lab, not a
 managed service. Guide: [docs/self-hosting.md](docs/self-hosting.md) ·
 runbook: [docs/runbook.md](docs/runbook.md).

@@ -37,9 +37,12 @@ so logs cannot fill the disk.
 
 ## Requirements
 
-- A Linux VPS (Ubuntu 24.04 or Debian 12 tested in spirit; CI runs Ubuntu 24.04). 1 vCPU / 1 GB RAM
-  is enough for small volumes; 2 GB is comfortable while building the image on the server.
+- A Linux VPS. Only Ubuntu 24.04 is exercised (the CI runner); other distros with the tools below
+  should work but are untested. 1 vCPU / 1 GB RAM is enough for small volumes; 2 GB is comfortable
+  while building the image on the server.
 - Docker Engine 25+ with the Compose plugin (`docker compose version` ≥ 2.24).
+- On the host: `bash` 4+, `flock` (util-linux, present on Ubuntu/Debian), `git` for `--build`.
+  `jq` is optional (used only in the log examples below).
 - A domain (or subdomain) you can point at the server.
 - Ports 80 and 443 reachable from the internet (Let's Encrypt validates over them).
 
@@ -120,14 +123,19 @@ git pull
 
 What `deploy.sh` does, in order:
 
-1. Takes a lock (one deploy at a time) and resolves the image (build, pull or `--rollback`).
+1. Takes a lock (one deploy or restore at a time), resolves the image (build, pull or
+   `--rollback`) and tags it as an immutable release (`webhook-relay:release-<UTC time>`), so a
+   later rebuild of the same tag can never change what `--rollback` brings back. The live color is
+   read from the proxy config, the source of truth.
 2. Runs the migrations job. If it fails, nothing else happens and the live color keeps serving.
 3. Starts the idle color with the new image and waits for its Docker health check
    (`HEALTH_TIMEOUT_SECONDS`, default 120). If the container exits, restarts or reports unhealthy,
-   it is removed and the script exits non-zero: **automatic rollback**, the proxy never switched.
+   it is removed and the script exits non-zero: the release is **refused automatically**, the
+   proxy never switched.
 4. Probes the new color from inside the Caddy container (same network path the proxy will use).
 5. Rewrites `runtime/caddy/upstream.caddy` and runs `caddy reload`, a graceful config swap:
-   in-flight requests finish on the old color, new requests go to the new one.
+   in-flight requests finish on the old color, new requests go to the new one. The switch and the
+   state update ignore Ctrl-C/SIGTERM/SIGHUP, so a dropped SSH session cannot leave them out of sync.
 6. Checks `/api/health` 5 times through the proxy; on failure it points Caddy back.
 7. Waits `DRAIN_SECONDS` (15), then stops the old color with `SIGTERM` and a 30 s grace period.
    `init: true` makes sure the signal reaches Node, so in-flight requests and `after()` callbacks
@@ -136,7 +144,7 @@ What `deploy.sh` does, in order:
 CI measures this on every PR with continuous HTTPS traffic during the deploy and fails on any
 error or timeout; see the job summary of the "Self-hosting" workflow.
 
-Roll back to the previous image (no migrations are run):
+Roll back to the previous release (no migrations are run; running it again swaps back):
 
 ```bash
 ./scripts/deploy.sh --rollback
@@ -163,13 +171,24 @@ plus a `.sha256`, verifies each dump is readable before keeping it, and deletes 
 ./scripts/restore.sh backups/relay-20261015T030000.000Z.dump  # asks for confirmation
 ```
 
-`restore.sh` verifies the checksum, takes a safety backup of the current state, pauses the
-scheduler, restores in a single transaction (all or nothing) and resumes the scheduler.
+`restore.sh` takes the deploy lock, pins a private copy of the dump (checked against its
+`.sha256`), puts the proxy in **maintenance** (every request gets `503` + `Retry-After`, so webhook
+senders retry later instead of getting a `202` for an event the restore would erase; the scheduler
+pauses too because it goes through the proxy), takes a safety backup of the current state (exempt
+from retention), restores in a single transaction (all or nothing) and takes the proxy out of
+maintenance. Expect a `health` alert if the restore takes longer than the alert threshold: the
+site is intentionally answering 503.
+
+Dumps are written with mode `0600` (they contain source secrets and payloads); run off-site copy
+jobs as root. Restore a dump into the schema it was taken from: `pg_restore --clean` only drops
+objects that exist in the dump, so after newer migrations first deploy the release that matches
+the dump (`deploy.sh --image ...`) or restore into an empty database.
 
 ### Off-site backups
 
 A backup on the same disk does not survive losing the server. Copy `deploy/backups` somewhere else,
-for example with [rclone](https://rclone.org) to any S3-compatible bucket, from the host's crontab:
+for example with [rclone](https://rclone.org) to any S3-compatible bucket, from root's crontab
+(`sudo crontab -e`; the dumps are owner-only):
 
 ```cron
 # 03:30 every day: mirror new dumps to the bucket (never deletes remote files)

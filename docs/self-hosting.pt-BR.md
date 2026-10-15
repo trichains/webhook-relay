@@ -37,9 +37,12 @@ então os logs não conseguem encher o disco.
 
 ## Requisitos
 
-- Uma VPS Linux (Ubuntu 24.04 ou Debian 12 testados em espírito; o CI roda Ubuntu 24.04). 1 vCPU / 1 GB de RAM
-  dá conta de volumes pequenos; 2 GB é confortável para buildar a imagem no servidor.
+- Uma VPS Linux. Só o Ubuntu 24.04 é exercitado (o runner do CI); outras distros com as ferramentas
+  abaixo devem funcionar, mas não foram testadas. 1 vCPU / 1 GB de RAM dá conta de volumes pequenos;
+  2 GB é confortável para buildar a imagem no servidor.
 - Docker Engine 25+ com o plugin Compose (`docker compose version` ≥ 2.24).
+- No host: `bash` 4+, `flock` (util-linux, já vem no Ubuntu/Debian), `git` para o `--build`.
+  O `jq` é opcional (só aparece nos exemplos de log abaixo).
 - Um domínio (ou subdomínio) que você consiga apontar para o servidor.
 - Portas 80 e 443 acessíveis pela internet (o Let's Encrypt valida por elas).
 
@@ -120,14 +123,20 @@ git pull
 
 O que o `deploy.sh` faz, em ordem:
 
-1. Pega um lock (um deploy por vez) e resolve a imagem (build, pull ou `--rollback`).
+1. Pega um lock (um deploy ou restore por vez), resolve a imagem (build, pull ou `--rollback`) e
+   marca ela como uma release imutável (`webhook-relay:release-<hora UTC>`), para que um rebuild
+   posterior da mesma tag nunca mude o que o `--rollback` traz de volta. A cor no ar é lida da
+   config do proxy, que é a fonte da verdade.
 2. Roda o job de migrations. Se falhar, nada mais acontece e a cor no ar continua atendendo.
 3. Sobe a cor ociosa com a nova imagem e espera o health check do Docker
    (`HEALTH_TIMEOUT_SECONDS`, padrão 120). Se o container sair, reiniciar ou ficar unhealthy,
-   ele é removido e o script sai com código diferente de zero: **rollback automático**, o proxy nunca trocou.
+   ele é removido e o script sai com código diferente de zero: a release é **recusada
+   automaticamente**, o proxy nunca trocou.
 4. Testa a nova cor de dentro do container do Caddy (o mesmo caminho de rede que o proxy vai usar).
 5. Reescreve o `runtime/caddy/upstream.caddy` e roda `caddy reload`, uma troca de config graciosa:
-   as requisições em andamento terminam na cor antiga, as novas vão para a nova.
+   as requisições em andamento terminam na cor antiga, as novas vão para a nova. A troca e a
+   gravação do estado ignoram Ctrl-C/SIGTERM/SIGHUP, então uma sessão SSH que cai não deixa os
+   dois dessincronizados.
 6. Verifica `/api/health` 5 vezes pelo proxy; se falhar, aponta o Caddy de volta.
 7. Espera `DRAIN_SECONDS` (15) e então para a cor antiga com `SIGTERM` e 30 s de tolerância.
    O `init: true` garante que o sinal chegue ao Node, então as requisições em andamento e os callbacks de `after()`
@@ -136,7 +145,7 @@ O que o `deploy.sh` faz, em ordem:
 O CI mede isso em todo PR com tráfego HTTPS contínuo durante o deploy e falha com qualquer
 erro ou timeout; veja o resumo do job do workflow "Self-hosting".
 
-Rollback para a imagem anterior (nenhuma migration é executada):
+Rollback para a release anterior (nenhuma migration é executada; rodar de novo destroca):
 
 ```bash
 ./scripts/deploy.sh --rollback
@@ -163,13 +172,25 @@ mais um `.sha256`, verifica se cada dump é legível antes de guardá-lo e apaga
 ./scripts/restore.sh backups/relay-20261015T030000.000Z.dump  # pede confirmação
 ```
 
-O `restore.sh` verifica o checksum, faz um backup de segurança do estado atual, pausa o
-scheduler, restaura em uma única transação (tudo ou nada) e retoma o scheduler.
+O `restore.sh` pega o lock de deploy, fixa uma cópia privada do dump (conferida contra o
+`.sha256`), coloca o proxy em **manutenção** (toda requisição recebe `503` + `Retry-After`, então
+quem envia webhook tenta de novo depois em vez de receber `202` por um evento que o restore apagaria;
+o scheduler também pausa, porque passa pelo proxy), faz um backup de segurança do estado atual
+(fora da retenção), restaura em uma única transação (tudo ou nada) e tira o proxy da manutenção.
+Conte com um alerta de `health` se o restore demorar mais que o limite de alerta: o site está
+respondendo 503 de propósito.
+
+Os dumps são gravados com permissão `0600` (contêm os secrets das sources e os payloads); rode os
+jobs de cópia externa como root. Restaure um dump no schema em que ele foi gerado: o
+`pg_restore --clean` só apaga objetos que existem no dump, então, depois de migrations mais novas,
+faça antes o deploy da release que corresponde ao dump (`deploy.sh --image ...`) ou restaure num
+banco vazio.
 
 ### Backups externos
 
 Um backup no mesmo disco não sobrevive à perda do servidor. Copie `deploy/backups` para outro lugar,
-por exemplo com o [rclone](https://rclone.org) para qualquer bucket compatível com S3, pelo crontab do host:
+por exemplo com o [rclone](https://rclone.org) para qualquer bucket compatível com S3, pelo crontab
+do root (`sudo crontab -e`; os dumps só podem ser lidos pelo dono):
 
 ```cron
 # 03:30 todo dia: espelha os dumps novos no bucket (nunca apaga arquivos remotos)

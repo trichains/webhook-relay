@@ -224,7 +224,7 @@ cd deploy && cp .env.example .env    # domínio, segredos, webhook de alerta
 
 O [workflow Self-hosting](.github/workflows/selfhost.yml) sobe essa stack em todo PR (CA interna
 do Caddy no runner) e testa de fora: webhook assinado entregue de ponta a ponta, deploy v1 → v2
-com tráfego HTTPS contínuo e zero requisições com erro, uma release que quebra no boot revertida
+com tráfego HTTPS contínuo e zero requisições com erro, uma release que quebra no boot recusada
 automaticamente, backup → apagar → restore com as contagens batendo, e uma queda que gera
 exatamente um alerta e um "resolved". É um kit testado e um laboratório, não um serviço
 gerenciado. Guia: [docs/self-hosting.pt-BR.md](docs/self-hosting.pt-BR.md) ·

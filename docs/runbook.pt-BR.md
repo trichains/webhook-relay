@@ -49,6 +49,9 @@ docker inspect -f '{{.State.OOMKilled}} {{.RestartCount}} {{.State.ExitCode}}' $
   ou o arquivo editado à mão).
 - O app está de pé, mas `/api/health` falha porque o banco caiu (nesse caso o app responde 503,
   não 502; veja a seção 3).
+- Toda requisição recebe `503 maintenance: restore in progress`: um `restore.sh` foi interrompido e
+  o `upstream.caddy` ainda começa com `MAINTENANCE`. Confirme que não há restore rodando e
+  então rode `./scripts/deploy.sh --repoint`.
 
 **Correção.** Se acabou de acontecer um deploy: `./scripts/deploy.sh --rollback`. Se a cor ativa está
 parada: `./scripts/dc.sh start app_<color>`. OOM: aumente a memória do servidor ou adicione um
@@ -73,8 +76,8 @@ não edite à mão.
 ```
 
 **Causas prováveis.**
-- O container do scheduler está parado (alguém rodou `dc.sh stop scheduler`, ou um restore foi
-  interrompido antes de religá-lo).
+- O container do scheduler está parado (alguém rodou `dc.sh stop scheduler`), ou o proxy continua
+  em manutenção depois de um restore interrompido (seção 1): o scheduler passa por ele.
 - `scheduler.tick_failed status=401`: o `CRON_SECRET` está diferente entre o scheduler e o app
   (o `.env` mudou, mas só um dos lados foi recriado).
 - `status=502/000`: o scheduler passa pelo listener interno do Caddy, então um problema de proxy/app
@@ -185,7 +188,8 @@ nunca apague o `caddy_data` como "correção".
 ./scripts/dc.sh logs --no-log-prefix app_green | tail -100
 docker inspect -f '{{json .State.Health}}' $(docker ps -aqf label=com.docker.compose.service=app_green) | jq
 ./scripts/dc.sh run --rm -T migrate                # do migrations apply cleanly?
-./scripts/dc.sh config | grep -A12 'app_green:'    # the env the container actually received
+docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(docker ps -aqf label=com.docker.compose.service=app_green) \
+  | sed -E 's/(PASSWORD|TOKEN|SECRET|DATABASE_URL)=.*/\1=***/'   # env it received, secrets masked
 ```
 
 **Causas prováveis.**
