@@ -8,13 +8,17 @@ source /ops/common.sh
 DIR=${BACKUP_DIR:-/backups}
 KEEP=${BACKUP_KEEP:-14}
 mkdir -p "$DIR"
-name="${PGDATABASE}-$(date -u +%Y%m%dT%H%M%SZ).dump"
+# Millisecond timestamp: two backups in the same second (e.g. restore.sh's safety backup right
+# after a manual one) must never get the same name.
+name="${PGDATABASE}-$(date -u +%Y%m%dT%H%M%S.%3NZ).dump"
 tmp="$DIR/.${name}.partial"
 trap 'rm -f "$tmp"' EXIT
 
 started=$(date +%s)
 pg_dump --format=custom --no-owner --file="$tmp"
 pg_restore --list "$tmp" >/dev/null # an unreadable dump is a failed backup and never rotates in
+# Never replace an existing dump (mv -n would fail silently; check explicitly).
+[ ! -e "$DIR/$name" ] || { log error backup.name_collision "$name already exists" >&2; exit 1; }
 mv "$tmp" "$DIR/$name"
 (cd "$DIR" && sha256sum "$name" >"$name.sha256")
 

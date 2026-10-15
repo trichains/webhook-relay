@@ -160,7 +160,7 @@ mais um `.sha256`, verifica se cada dump é legível antes de guardá-lo e apaga
 
 ```bash
 ./scripts/backup.sh                                     # backup agora, mostra o arquivo
-./scripts/restore.sh backups/relay-20261015T030000Z.dump  # pede confirmação
+./scripts/restore.sh backups/relay-20261015T030000.000Z.dump  # pede confirmação
 ```
 
 O `restore.sh` verifica o checksum, faz um backup de segurança do estado atual, pausa o

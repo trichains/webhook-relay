@@ -160,7 +160,7 @@ plus a `.sha256`, verifies each dump is readable before keeping it, and deletes 
 
 ```bash
 ./scripts/backup.sh                                     # backup now, prints the file
-./scripts/restore.sh backups/relay-20261015T030000Z.dump  # asks for confirmation
+./scripts/restore.sh backups/relay-20261015T030000.000Z.dump  # asks for confirmation
 ```
 
 `restore.sh` verifies the checksum, takes a safety backup of the current state, pauses the

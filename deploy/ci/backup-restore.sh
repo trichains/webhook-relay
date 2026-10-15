@@ -21,6 +21,7 @@ started=$SECONDS
 file=$("$DEPLOY_DIR/scripts/backup.sh")
 backup_s=$((SECONDS - started))
 size=$(du -h "$file" | cut -f1)
+sha_before=$(sha256sum "$file" | cut -d' ' -f1)
 
 psql_q -q -c "delete from sources;" >/dev/null # cascades to destinations, events, deliveries, attempts
 wiped=$(counts)
@@ -48,6 +49,9 @@ read -r s d e dl a <<<"$before"
 } >>"$SUMMARY"
 
 [ "$before" = "$after" ] || { say "row counts differ after restore"; exit 1; }
+# Regression (docs/incidents/2026-10-15-restore-overwritten-by-safety-backup.md): the safety
+# backup taken by restore.sh must not replace or prune the dump that was restored.
+[ "$(sha256sum "$file" | cut -d' ' -f1)" = "$sha_before" ] || { say "the restored dump was modified on disk"; exit 1; }
 [ "$health" = "true" ] || { say "app unhealthy after restore"; exit 1; }
 # The restored data is usable, not just present: a new webhook on the restored source is accepted.
 [ "$(send_webhook "after-restore-$RANDOM")" = "202" ] || { say "ingest failed after restore"; exit 1; }

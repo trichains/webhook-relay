@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Restores a dump from deploy/backups into the stack's Postgres.
 #
-#   ./scripts/restore.sh backups/relay-20261015T030000Z.dump          asks for confirmation
-#   ./scripts/restore.sh --yes relay-20261015T030000Z.dump            no prompt (automation)
+#   ./scripts/restore.sh backups/relay-20261015T030000.000Z.dump          asks for confirmation
+#   ./scripts/restore.sh --yes relay-20261015T030000.000Z.dump            no prompt (automation)
 #
-# What it does: checks the file (and its .sha256), takes a safety backup of the current state,
-# pauses the scheduler (no deliveries mid-restore), restores in a single transaction
-# (all-or-nothing), resumes the scheduler. The app keeps running; requests that touch the
-# tables wait for the restore transaction to commit.
+# What it does: pins a private copy of the dump and checks it against its .sha256, takes a
+# safety backup of the current state, pauses the scheduler (no deliveries mid-restore), restores
+# the pinned copy in a single transaction (all-or-nothing), resumes the scheduler. The app keeps
+# running; requests that touch the tables wait for the restore transaction to commit.
+#
+# The pinned copy matters: the safety backup and its retention must never be able to replace or
+# delete the file being restored (docs/incidents/2026-10-15-restore-overwritten-by-safety-backup.md).
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 YES=0 SAFETY=1 FILE=""
@@ -30,6 +33,14 @@ if [ "$YES" != 1 ]; then
   [ "$answer" = "y" ] || [ "$answer" = "Y" ] || die "aborted"
 fi
 
+# Pin: a dotfile copy is invisible to retention (*.dump glob) and to new backups' names.
+pinned=".restore-$$-$name"
+expected=""
+[ -f "$BACKUP_HOST_DIR/$name.sha256" ] && expected=$(cut -d' ' -f1 "$BACKUP_HOST_DIR/$name.sha256")
+in_backup cp "/backups/$name" "/backups/$pinned"
+cleanup_pin() { in_backup rm -f "/backups/$pinned" >/dev/null 2>&1 || true; }
+trap cleanup_pin EXIT
+
 if [ "$SAFETY" = 1 ]; then
   say "safety backup of the current state first"
   "$(dirname "${BASH_SOURCE[0]}")/backup.sh" >/dev/null
@@ -41,12 +52,8 @@ if [ -n "$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --f
   dc stop scheduler >/dev/null
 fi
 resume() { if [ "$scheduler_was_running" = 1 ]; then dc start scheduler >/dev/null || say "WARNING: could not restart the scheduler"; fi; }
-trap resume EXIT
+trap 'resume; cleanup_pin' EXIT
 
-say "restoring $name"
-if [ -n "$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=backup)" ]; then
-  dc exec -T backup /ops/restore.sh "/backups/$name"
-else
-  dc run --rm -T --no-deps backup /ops/restore.sh "/backups/$name"
-fi
+say "restoring $name${expected:+ (sha256 ${expected:0:12}...)}"
+in_backup /ops/restore.sh "/backups/$pinned" "$expected"
 say "restore ok"

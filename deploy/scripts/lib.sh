@@ -73,6 +73,16 @@ reload_caddy() {
   dc exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 }
 
+# Runs a command in the backup service (has pg_dump/pg_restore, PG* env and /backups mounted):
+# exec into the running container, or a one-off container when the service is stopped.
+in_backup() {
+  if [ -n "$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=backup)" ]; then
+    dc exec -T backup "$@"
+  else
+    dc run --rm -T --no-deps backup "$@"
+  fi
+}
+
 # GET /api/health of a color from inside the proxy container (same network path Caddy uses).
 probe_color() {
   dc exec -T caddy wget -q -T 5 -O - "http://app_$1:3000/api/health" 2>/dev/null

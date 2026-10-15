@@ -5,9 +5,17 @@ set -euo pipefail
 export OPS_SERVICE=backup
 source /ops/common.sh
 
-file=${1:?usage: restore.sh /backups/<file>.dump}
+# usage: restore.sh /backups/<file>.dump [expected-sha256]
+file=${1:?usage: restore.sh /backups/<file>.dump [expected-sha256]}
+expected=${2:-}
 [ -f "$file" ] || { log error restore.missing "$file"; exit 1; }
-if [ -f "$file.sha256" ]; then
+if [ -n "$expected" ]; then
+  actual=$(sha256sum "$file" | cut -d' ' -f1)
+  [ "$actual" = "$expected" ] || {
+    log error restore.checksum_mismatch "$file: expected $expected, got $actual"
+    exit 1
+  }
+elif [ -f "$file.sha256" ]; then
   (cd "$(dirname "$file")" && sha256sum -c --quiet "$(basename "$file").sha256") || {
     log error restore.checksum_mismatch "$file"
     exit 1
