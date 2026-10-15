@@ -1,0 +1,68 @@
+{{- if .Values.scheduler.enabled }}
+# Replaces Vercel Cron: one queue pass per minute (retries with backoff). It calls the Service, so
+# it reaches whichever pods are Ready, during rollouts too.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "relay.fullname" . }}-scheduler
+  labels:
+    {{- include "relay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scheduler
+spec:
+  schedule: {{ .Values.scheduler.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: {{ .Values.scheduler.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            {{- include "relay.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: scheduler
+        spec:
+          restartPolicy: Never
+          {{- include "relay.podSecurity" . | nindent 10 }}
+          containers:
+            - name: tick
+              image: {{ include "relay.schedulerImage" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command:
+                - node
+                - -e
+                - |
+                  fetch(process.env.CRON_URL, {
+                    headers: { authorization: "Bearer " + process.env.CRON_SECRET },
+                    signal: AbortSignal.timeout(80000),
+                  })
+                    .then(async (r) => {
+                      const body = (await r.text()).slice(0, 300);
+                      console.log(JSON.stringify({ event: "scheduler.tick", status: r.status, body }));
+                      process.exit(r.ok ? 0 : 1);
+                    })
+                    .catch((e) => {
+                      console.error(JSON.stringify({ event: "scheduler.tick_failed", error: String(e) }));
+                      process.exit(1);
+                    });
+              env:
+                - name: CRON_URL
+                  value: {{ printf "http://%s:%v/api/cron/deliver" (include "relay.fullname" .) .Values.service.port | quote }}
+                - name: CRON_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "relay.secretName" . }}
+                      key: CRON_SECRET
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 48Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+{{- end }}

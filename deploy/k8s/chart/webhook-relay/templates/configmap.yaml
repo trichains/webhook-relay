@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "relay.fullname" . }}-config
+  labels:
+    {{- include "relay.labels" . | nindent 4 }}
+data:
+  NEXT_PUBLIC_APP_URL: {{ .Values.config.appUrl | quote }}
+  RELAY_INTERNAL_URL: {{ .Values.config.internalUrl | quote }}
+  {{- range $k, $v := .Values.config.extraEnv }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

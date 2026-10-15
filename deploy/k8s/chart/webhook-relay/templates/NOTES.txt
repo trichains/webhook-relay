@@ -1,0 +1,9 @@
+webhook-relay {{ include "relay.tag" . }} (release {{ .Release.Name }}, revision {{ .Release.Revision }}) in namespace {{ .Release.Namespace }}.
+
+  kubectl -n {{ .Release.Namespace }} get deploy,pods,svc,ingress,hpa,pdb,cronjob
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "relay.fullname" . }}-migrate
+{{- if .Values.ingress.enabled }}
+  curl http://{{ default "localhost" .Values.ingress.host }}/api/health
+{{- end }}
+
+Study lab verified in CI on kind (docs/kubernetes-lab.md), not a production setup.

@@ -1,0 +1,43 @@
+{{- if .Values.migration.enabled }}
+# Helm hook: runs (and must succeed) before the release's resources are created or upgraded.
+# It reads only the database Secret, which belongs to the database release and therefore exists
+# on the very first install. migrate.mjs takes a Postgres advisory lock: concurrent runs are safe.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "relay.fullname" . }}-migrate
+  labels:
+    {{- include "relay.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    # Kept after success (logs stay readable) and replaced on the next upgrade.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: {{ .Values.migration.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migration.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "relay.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      {{- include "relay.podSecurity" . | nindent 6 }}
+      containers:
+        - name: migrate
+          image: {{ include "relay.migrationImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            {{- include "relay.databaseEnv" . | nindent 12 }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+{{- end }}

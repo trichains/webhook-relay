@@ -1,0 +1,164 @@
+# Default values for the webhook-relay chart. The lab (deploy/k8s/scripts/deploy.sh) overrides only
+# image tags and the secrets file it generates; everything else below is what runs in CI.
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: webhook-relay
+  # Defaults to the chart appVersion. Never "latest": kind loads images by tag (no registry).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Database migrations: a Job that Helm runs as a pre-install/pre-upgrade hook, so a new version
+# only rolls out after its schema is in place (and a failed migration stops the upgrade).
+migration:
+  enabled: true
+  image:
+    repository: webhook-relay-migrate
+    # Defaults to image.tag (both images are built together, see the Dockerfile targets).
+    tag: ""
+  backoffLimit: 1
+  activeDeadlineSeconds: 300
+
+# Used only when autoscaling is disabled. With the HPA on, the chart leaves `replicas` out of the
+# Deployment so `helm upgrade` never fights the autoscaler.
+replicaCount: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  # Average CPU across pods, as a percentage of resources.requests.cpu.
+  targetCPUUtilizationPercentage: 50
+  # How long the HPA waits before removing pods once load drops (default in Kubernetes: 300 s).
+  scaleDownStabilizationSeconds: 120
+
+# Rolling update: start one extra pod, wait until it is Ready, then stop one old pod. Never fewer
+# Ready pods than desired during a rollout.
+strategy:
+  maxSurge: 1
+  maxUnavailable: 0
+# A new pod must stay Ready this long before it counts as available (lets the ingress pick it up).
+minReadySeconds: 5
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+probes:
+  path: /api/health
+  # Boot window: up to 2 s x 30 = 60 s before liveness/readiness take over.
+  startup:
+    periodSeconds: 2
+    timeoutSeconds: 3
+    failureThreshold: 30
+  # Readiness also checks the database (select 1): a pod that cannot reach Postgres leaves the
+  # Service endpoints instead of returning errors.
+  readiness:
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # Liveness restarts the container. Lenient on purpose (1 min of failures), because /api/health
+  # also depends on the database: see "Limitations" in docs/kubernetes-lab.md.
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+# Graceful shutdown: on termination the pod is removed from the endpoints while preStop sleeps (so
+# the ingress stops sending new requests), then SIGTERM lets Next finish in-flight requests and
+# pending after() callbacks (first delivery attempts). The grace period covers both.
+preStopSleepSeconds: 10
+terminationGracePeriodSeconds: 40
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  # Empty host = any host (the kind lab reaches it as http://localhost).
+  host: ""
+  annotations:
+    # The ingest endpoint accepts up to 1 MB; leave room for headers.
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+  tls: []
+  #  - secretName: relay-tls
+  #    hosts: [relay.example.com]
+
+# Non-secret configuration -> ConfigMap (envFrom).
+config:
+  # Public base URL (ingest URLs in the UI, built-in sink resolution fallback).
+  appUrl: http://localhost
+  # Built-in sinks (/api/sink/*) are reached on the pod itself, never through the ingress.
+  internalUrl: http://127.0.0.1:3000
+  extraEnv: {}
+
+# Secret values -> Secret (envFrom). Never commit real values: pass them with -f <file outside git>
+# (the lab script generates deploy/k8s/.lab/secrets.yaml) or point to a Secret managed elsewhere
+# (External Secrets, Sealed Secrets, the cloud's secret manager) with existingSecret.
+secrets:
+  existingSecret: ""
+  adminToken: ""
+  cronSecret: ""
+
+# Database connection. The lab points at the postgres-lab release (deploy/k8s/chart/postgres-lab).
+# In production use a managed Postgres and either these fields or a full URL in urlSecret.
+database:
+  host: relay-postgres
+  port: 5432
+  name: relay
+  user: relay
+  passwordSecret:
+    name: relay-postgres
+    key: password
+  # If set, DATABASE_URL comes from this Secret key and the fields above are ignored.
+  urlSecret:
+    name: ""
+    key: url
+
+# Replaces Vercel Cron: a CronJob that calls /api/cron/deliver through the Service.
+scheduler:
+  enabled: true
+  schedule: "* * * * *"
+  # Defaults to the app image (it has node and fetch; nothing else is pulled).
+  image:
+    repository: ""
+    tag: ""
+  activeDeadlineSeconds: 90
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  # The image declares USER node; Kubernetes needs the numeric id to verify runAsNonRoot.
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

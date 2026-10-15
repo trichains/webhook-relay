@@ -1,0 +1,24 @@
+# Lab database. Kept in its own release so it exists before the app's pre-install migration hook
+# runs, and so an app rollback never touches the data.
+image: postgres:17-alpine
+
+auth:
+  user: relay
+  database: relay
+  # Empty: generated once (alphanumeric, URL-safe) and kept across upgrades via lookup.
+  password: ""
+
+maxConnections: 100
+
+storage:
+  size: 1Gi
+  # Empty = the cluster default StorageClass (kind: local-path "standard").
+  storageClassName: ""
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
