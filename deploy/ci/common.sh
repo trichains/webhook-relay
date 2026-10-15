@@ -64,11 +64,17 @@ load_start() {
 load_stop() {
   local dir=$1 pid
   touch "$dir/stop"
-  while read -r pid; do wait "$pid" 2>/dev/null || true; done <"$dir/pids"
+  # Callers run this inside $(...), a subshell where `wait` cannot see the workers (they are
+  # children of the parent shell) and returns at once. Poll until every worker has exited, so
+  # the counts below come from finished logs (docs/incidents/2026-10-15-load-counter-race.md).
+  while read -r pid; do
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+  done <"$dir/pids"
+  cat "$dir"/health-*.log >"$dir/health.all"
   local h_total h_ok i_total i_ok p_max
-  h_total=$(cat "$dir"/health-*.log | wc -l)
-  h_ok=$(cat "$dir"/health-*.log | awk '$1 == 200' | wc -l)
-  p_max=$(cat "$dir"/health-*.log | awk 'BEGIN {m = 0} $2 > m {m = $2} END {printf "%.3f", m}')
+  h_total=$(wc -l <"$dir/health.all")
+  h_ok=$(awk '$1 == 200' "$dir/health.all" | wc -l)
+  p_max=$(awk 'BEGIN {m = 0} $2 > m {m = $2} END {printf "%.3f", m}' "$dir/health.all")
   i_total=$(wc -l <"$dir/ingest.log")
   i_ok=$(awk '$1 == 202 || $1 == 200' "$dir/ingest.log" | wc -l)
   echo "health_total=$h_total health_ok=$h_ok health_errors=$((h_total - h_ok)) health_max_s=$p_max ingest_total=$i_total ingest_ok=$i_ok ingest_errors=$((i_total - i_ok))"

@@ -100,7 +100,7 @@ deadline=$((SECONDS + HEALTH_TIMEOUT))
 while :; do
   id=$(cid "app_$TARGET")
   [ -n "$id" ] || abort_target "container app_$TARGET disappeared"
-  read -r status health restarts < <(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$id")
+  read -r status health restarts < <(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}} {{.RestartCount}}' "$id" 2>/dev/null || echo "gone none 0")
   if [ "$status" = "running" ] && [ "$health" = "healthy" ]; then break; fi
   case "$status" in exited | dead) abort_target "app_$TARGET exited during startup" ;; esac
   [ "$restarts" -gt 0 ] && abort_target "app_$TARGET restarted $restarts time(s) during startup"
