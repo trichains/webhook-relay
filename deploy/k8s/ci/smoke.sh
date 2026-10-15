@@ -34,7 +34,10 @@ bad_code=$(CI_SECRET=wrong send_webhook "smoke-bad-sig")
 [ "$bad_code" = "401" ] || fail "wrong signature should be 401 (got $bad_code)"
 
 # Scheduler: queue a delivery directly in the database, then run the CronJob once on demand
-# (kubectl create job --from) instead of waiting for the next minute.
+# (kubectl create job --from) instead of waiting for the next minute. The schedule is suspended
+# meanwhile, so the on-demand run is the one that sends it.
+kn patch cronjob "$RELEASE-scheduler" --type=merge -p '{"spec":{"suspend":true}}' >/dev/null
+trap 'kn patch cronjob "$RELEASE-scheduler" --type=merge -p "{\"spec\":{\"suspend\":false}}" >/dev/null || true' EXIT
 psql_q -q -c "
   insert into destinations (id, source_id, name, url, max_attempts, timeout_ms)
   values ('dst_ci_sched', 'src_ci', 'Scheduler check', '/api/sink/ok', 6, 10000) on conflict (id) do nothing;
@@ -47,6 +50,9 @@ kn wait --for=condition=complete job/scheduler-smoke --timeout=90s >/dev/null ||
 tick=$(kn logs job/scheduler-smoke | tail -n 1)
 say "scheduler tick: $tick"
 sched_status=$(psql_q -At -c "select status from deliveries where id = 'dlv_ci_sched'")
+claimed=$(jq -r '.body | fromjson | .claimed // 0' <<<"$tick" 2>/dev/null || echo 0)
+[ "$(jq -r .status <<<"$tick")" = 200 ] && [ "$claimed" -ge 1 ] ||
+  fail "the on-demand scheduler run did not claim the queued delivery: $tick"
 [ "$sched_status" = "succeeded" ] || fail "queued delivery not sent by the scheduler (status $sched_status)"
 
 migrate_log=$(kn logs "job/$RELEASE-migrate" 2>/dev/null | tail -n 1)

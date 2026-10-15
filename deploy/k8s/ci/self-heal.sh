@@ -7,10 +7,18 @@
 # No request may fail.
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
+# Freeze the HPA at the current size for this check, so the autoscaler cannot change the pod count
+# (and the PDB's allowance) in the middle of it. Restored on exit.
+hpa_min=$(kn get hpa "$RELEASE" -o jsonpath='{.spec.minReplicas}')
+hpa_max=$(kn get hpa "$RELEASE" -o jsonpath='{.spec.maxReplicas}')
 desired=$(kn get deploy "$RELEASE" -o jsonpath='{.spec.replicas}')
+restore_hpa() { kn patch hpa "$RELEASE" --type=merge -p "{\"spec\":{\"minReplicas\":$hpa_min,\"maxReplicas\":$hpa_max}}" >/dev/null || true; }
+trap restore_hpa EXIT
+kn patch hpa "$RELEASE" --type=merge -p "{\"spec\":{\"minReplicas\":$desired,\"maxReplicas\":$desired}}" >/dev/null
+say "HPA frozen at $desired replicas for this check"
 before=$(ready_web_pods | sort)
 victim=$(head -n 1 <<<"$before")
-dir=/tmp/k8s-selfheal
+dir=/tmp/k8s-selfheal-$(date +%s)
 load_start "$dir"
 sleep 3
 
@@ -51,8 +59,9 @@ EOF
     say "evicted $pod"
     continue
   }
-  refused=$(grep -o 'violate the pod.s disruption budget' <<<"$out" || echo "$out")
-  say "eviction of $pod refused: $refused"
+  refused=$(grep -o 'violate the pod.s disruption budget' <<<"$out" || true)
+  say "eviction of $pod refused: ${refused:-$out}"
+  [ -n "$refused" ] || { say "eviction failed for another reason"; exit 1; }
   break
 done
 wait_until 120 full_strength || { say "deployment did not recover after the evictions"; exit 1; }

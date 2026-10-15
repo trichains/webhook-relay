@@ -10,7 +10,7 @@ NEW_TAG=${1:-v2}
 before=$(live_version)
 old_pods=$(ready_web_pods | sort)
 rev_before=$(h status "$RELEASE" -n "$NAMESPACE" -o json | jq -r .version)
-dir=/tmp/k8s-rolling
+dir=/tmp/k8s-rolling-$(date +%s)
 load_start "$dir"
 # Follow the old pods' logs: they disappear with the pods, and they explain any delivery problem.
 for p in $old_pods; do kn logs -f "$p" >"$dir/pod-$p.log" 2>&1 & done

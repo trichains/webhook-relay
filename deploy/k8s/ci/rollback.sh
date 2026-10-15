@@ -16,7 +16,7 @@ CMD ["node", "-e", "console.error(JSON.stringify({level:'error',event:'boot.cras
 EOF
 docker tag "webhook-relay-migrate:$base_tag" webhook-relay-migrate:broken
 
-dir=/tmp/k8s-rollback
+dir=/tmp/k8s-rollback-$(date +%s)
 load_start "$dir"
 sleep 2
 started=$SECONDS
@@ -54,6 +54,9 @@ say "rollback: $result (live $live_before -> $live_after); history: $history"
 
 [ "$live_after" = "$live_before" ] || { say "live version changed"; exit 1; }
 [ "$tag_after" = "$base_tag" ] || { say "deployment image is $tag_after, expected $base_tag"; exit 1; }
+last=$(h history "$RELEASE" -n "$NAMESPACE" -o json | jq -r '.[-1] | "\(.status)|\(.description)"')
+[ "$last" = "deployed|Rollback to $rev_before" ] || { say "expected the last revision to be 'Rollback to $rev_before', got: $last"; exit 1; }
 [ "$rev_after" -gt "$rev_before" ] || { say "no rollback revision recorded"; exit 1; }
+[ "$restarts" -gt 0 ] || { say "the broken pod never crash-looped: the failure was something else"; exit 1; }
 [ "$health_errors" = 0 ] && [ "$ingest_errors" = 0 ] || { say "requests failed during the failed upgrade"; exit 1; }
 say "rollback ok"
