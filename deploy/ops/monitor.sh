@@ -39,7 +39,8 @@ send() {
       '{content:$t, text:$t, status:$s, check:$c, message:$m, instance:$i, ts:(now|floor|todate)}')
     ctype="application/json"
   fi
-  if curl -fsS -m 10 -X POST -H "content-type: ${ctype}" --data "$body" "$ALERT_WEBHOOK_URL" >/dev/null; then
+  # The webhook URL often embeds a token (Discord): it goes to curl on stdin, not as an argument.
+  if curl_cfg url "$ALERT_WEBHOOK_URL" | curl -fsS -m 10 -X POST -H "content-type: ${ctype}" --data "$body" -K - >/dev/null; then
     log info alert.sent "$text"
   else
     log error alert.send_failed "$text"

@@ -26,6 +26,13 @@ code=$(curl -sk -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/events")
 
 ensure_ci_source
 
+# Secrets in requests must not reach the proxy logs (Hotmart's hottok: header or query string).
+canary="hottok-canary-$RANDOM$RANDOM"
+curl -sk -o /dev/null -H "x-hotmart-hottok: $canary" "$BASE_URL/api/ingest/no-such-source?hottok=$canary" || true
+sleep 1
+leaks=$(dc logs --no-color caddy 2>/dev/null | grep -c "$canary" || true)
+[ "$leaks" = "0" ] || fail "hottok canary found $leaks time(s) in the Caddy logs"
+
 # 1) signed webhook -> 202 -> delivered by the first attempt (runs in after())
 started=$(date +%s%N)
 code=$(send_webhook "smoke-$(date +%s)" /tmp/smoke-ingest.json)
@@ -62,6 +69,7 @@ sched_s=$((SECONDS - sched_started))
   echo "| dashboard / API without credentials | 401 / 401 |"
   echo "| signed webhook → delivered to /api/sink/ok | ${latency}s ($attempt) |"
   echo "| wrong signature | 401 |"
+  echo "| hottok (header + query) in proxy logs | redacted (0 occurrences) |"
   echo "| queued delivery picked up by the scheduler | ${sched_s}s |"
 } | tee -a "$SUMMARY"
 say "smoke ok"

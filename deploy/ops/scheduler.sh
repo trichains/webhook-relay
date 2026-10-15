@@ -11,7 +11,7 @@ INTERVAL=${SCHEDULER_INTERVAL_SECONDS:-30}
 
 log info scheduler.started "every ${INTERVAL}s -> ${URL}"
 while true; do
-  out=$(curl -sS -m 90 -w '\n%{http_code}' -H "authorization: Bearer ${CRON_SECRET}" "$URL" 2>&1)
+  out=$(curl_cfg header "authorization: Bearer ${CRON_SECRET}" | curl -sS -m 90 -w '\n%{http_code}' -K - "$URL" 2>&1)
   code=${out##*$'\n'}
   body=${out%$'\n'*}
   if [ "$code" = "200" ]; then

@@ -5,14 +5,14 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 live_before=$(live_version)
-base_image=$(state_get "$(state_get ACTIVE_COLOR | tr '[:lower:]' '[:upper:]')_IMAGE")
+base_tag=$live_before # deploy --build tags webhook-relay:<version> and webhook-relay-migrate:<version>
 
 # A "bad release": same app, but the process dies at startup.
 docker build -q -t webhook-relay:broken - >/dev/null <<EOF
-FROM $base_image
+FROM webhook-relay:$base_tag
 CMD ["node", "-e", "console.error(JSON.stringify({level:'error',event:'boot.crash',error:'simulated bad release'})); process.exit(1)"]
 EOF
-docker tag "${base_image/webhook-relay:/webhook-relay-migrate:}" webhook-relay-migrate:broken
+docker tag "webhook-relay-migrate:$base_tag" webhook-relay-migrate:broken
 
 dir=/tmp/load-rollback
 load_start "$dir"

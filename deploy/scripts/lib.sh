@@ -17,6 +17,10 @@ die() {
   exit 1
 }
 
+for bin in docker flock; do
+  command -v "$bin" >/dev/null 2>&1 || die "'$bin' is required on the host (see docs/self-hosting.md, Requirements)"
+done
+docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is required (docker compose version)"
 [ -f "$DEPLOY_DIR/.env" ] || die "missing $DEPLOY_DIR/.env (copy .env.example and fill it in)"
 mkdir -p "$RUNTIME_DIR/caddy" "$BACKUP_HOST_DIR"
 touch "$STATE_FILE"
@@ -54,6 +58,30 @@ state_set() {
 env_get() { sed -n "s/^$1=//p" "$DEPLOY_DIR/.env" | tail -n 1; }
 
 other_color() { [ "$1" = "blue" ] && echo green || echo blue; }
+
+# Serialize deploy.sh and restore.sh (fd 9 stays open until the script exits).
+take_deploy_lock() {
+  exec 9>"$RUNTIME_DIR/deploy.lock"
+  flock -n 9 || die "another deploy or restore is running"
+}
+
+# Color the proxy currently serves (or would serve, when in maintenance), from upstream.caddy.
+live_color_from_proxy() {
+  [ -f "$UPSTREAM_FILE" ] || return 0
+  sed -En 's/^# .*Live color: (blue|green).*/\1/p' "$UPSTREAM_FILE" | head -n 1
+}
+
+# Maintenance: Caddy answers 503 + Retry-After for everything, so webhook senders retry later and
+# nothing new is written. Used by restore.sh; the app containers keep running.
+write_maintenance() {
+  local color=$1
+  cat >"$UPSTREAM_FILE.tmp" <<EOF
+# Managed by scripts/restore.sh: MAINTENANCE. Live color: $color
+header Retry-After 120
+respond "maintenance: restore in progress, retry later" 503
+EOF
+  mv "$UPSTREAM_FILE.tmp" "$UPSTREAM_FILE"
+}
 
 write_upstream() {
   local color=$1

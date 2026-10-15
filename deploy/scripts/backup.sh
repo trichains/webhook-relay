@@ -3,11 +3,14 @@
 # Prints the host path of the new dump. Retention: BACKUP_KEEP newest dumps (deploy/.env).
 #
 #   ./scripts/backup.sh
+#   ./scripts/backup.sh --no-prune     skip retention (restore.sh uses it for its safety backup)
 #
 # Off-site copy: see docs/self-hosting.md ("Off-site backups").
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-path=$(in_backup /ops/backup.sh)
+prune=1
+[ "${1:-}" = "--no-prune" ] && prune=0
+path=$(in_backup env "BACKUP_PRUNE=$prune" /ops/backup.sh)
 path=$(tail -n 1 <<<"$path" | tr -d '\r')
 host_path="$BACKUP_HOST_DIR/$(basename "$path")"
 [ -f "$host_path" ] || die "backup reported $path but $host_path does not exist"

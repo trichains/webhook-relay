@@ -52,6 +52,7 @@ x-ops: &ops
   image: webhook-relay-ops:local
   pull_policy: build
   restart: unless-stopped
+  init: true # bash is not PID 1, so SIGTERM stops the loops at once (no 10 s kill timeout)
   security_opt:
     - no-new-privileges:true
   logging: *logging
