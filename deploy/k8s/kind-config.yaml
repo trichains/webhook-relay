@@ -1,0 +1,21 @@
+# kind cluster for the Kubernetes lab (deploy/k8s/scripts/up.sh). One node is enough for the lab:
+# it runs the control plane, ingress-nginx (hostPort 80/443) and the workloads.
+# The node image (Kubernetes version) is pinned in scripts/lib.sh.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: webhook-relay-lab
+nodes:
+  - role: control-plane
+    # ingress-nginx's kind manifest schedules the controller on nodes with this label.
+    labels:
+      ingress-ready: "true"
+    # http://localhost on the host reaches the ingress controller inside the node.
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 80
+        listenAddress: "127.0.0.1"
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 443
+        listenAddress: "127.0.0.1"
+        protocol: TCP

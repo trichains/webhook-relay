@@ -54,3 +54,6 @@ next-env.d.ts
 # self-hosting (deploy/): secrets, deploy state and local dumps never go to git
 /deploy/runtime/
 /deploy/backups/
+
+# Kubernetes lab (deploy/k8s): generated secrets
+/deploy/k8s/.lab/
