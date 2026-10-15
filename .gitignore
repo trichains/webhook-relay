@@ -50,3 +50,7 @@ next-env.d.ts
 /playwright/.cache
 
 .vercel
+
+# self-hosting (deploy/): secrets, deploy state and local dumps never go to git
+/deploy/runtime/
+/deploy/backups/

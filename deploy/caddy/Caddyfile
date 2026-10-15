@@ -1,0 +1,49 @@
+# Reverse proxy + automatic HTTPS for webhook-relay (see docs/self-hosting.md).
+#
+# The live upstream (app_blue or app_green) lives in runtime/upstream.caddy, written by
+# scripts/deploy.sh. Switching colors = rewrite that file + `caddy reload`, which swaps the config
+# gracefully: in-flight requests finish on the old upstream, new ones go to the new one.
+{
+	# Admin API only on loopback inside the container (used by `caddy reload`).
+	admin localhost:2019
+	servers {
+		# Webhook senders retry on timeouts; keep slow clients from holding connections forever.
+		timeouts {
+			read_body 30s
+			read_header 10s
+			idle 2m
+		}
+	}
+}
+
+(live_upstream) {
+	# Glob import: an empty runtime dir (before the first deploy) does not stop Caddy from booting.
+	import /etc/caddy/runtime/*.caddy
+}
+
+# Public site. CADDY_TLS is your e-mail (Let's Encrypt / ZeroSSL via ACME) or "internal"
+# (Caddy's local CA: for localhost, CI and private networks).
+{$DOMAIN} {
+	tls {$CADDY_TLS}
+	encode zstd gzip
+	request_body {
+		# The app rejects payloads over 1 MB itself; this stops anything absurd at the edge.
+		max_size 2MB
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+	import live_upstream
+}
+
+# Internal listener (not published on the host): the scheduler and the monitor go through it,
+# so they always follow whichever color is live.
+:8080 {
+	import live_upstream
+}

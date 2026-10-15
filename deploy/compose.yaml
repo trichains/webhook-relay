@@ -1,0 +1,164 @@
+# Production stack for self-hosting webhook-relay on a single VPS (see docs/self-hosting.md).
+#
+# Use the scripts instead of bare `docker compose` for app changes:
+#   ./scripts/deploy.sh --build v1   first deploy / new version (blue-green, zero downtime)
+#   ./scripts/dc.sh ps               docker compose with the right files and env files
+#
+# app_blue and app_green run the same image line; only one is live at a time (the one in
+# runtime/upstream.caddy). They sit in their own profiles so a plain `docker compose up -d`
+# starts the infrastructure only and never recreates the live app behind the scripts' back.
+name: webhook-relay
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-db-env: &db-env
+  PGHOST: postgres
+  PGUSER: ${POSTGRES_USER:-relay}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+  PGDATABASE: ${POSTGRES_DB:-relay}
+
+x-app: &app
+  restart: unless-stopped
+  init: true # PID 1 forwards SIGTERM so Next drains in-flight requests and after() callbacks
+  stop_grace_period: 30s
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment:
+    DATABASE_URL: postgres://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-relay}
+    RELAY_ADMIN_TOKEN: ${RELAY_ADMIN_TOKEN:?set RELAY_ADMIN_TOKEN in deploy/.env}
+    CRON_SECRET: ${CRON_SECRET:?set CRON_SECRET in deploy/.env}
+    NEXT_PUBLIC_APP_URL: https://${DOMAIN:?set DOMAIN in deploy/.env}
+    RELAY_INTERNAL_URL: http://127.0.0.1:3000
+  healthcheck:
+    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>r.json().then(b=>process.exit(r.ok&&b.ok?0:1))).catch(()=>process.exit(1))"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 60s
+    start_interval: 1s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop: [ALL]
+  logging: *logging
+
+x-ops: &ops
+  build:
+    context: ./ops
+  image: webhook-relay-ops:local
+  pull_policy: build
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  logging: *logging
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-relay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+    command: ["postgres", "-c", "max_connections=${POSTGRES_MAX_CONNECTIONS:-50}", "-c", "log_min_duration_statement=1000"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    shm_size: 128mb
+    logging: *logging
+
+  # One-shot: applies drizzle migrations. Run by deploy.sh before a new version goes live.
+  migrate:
+    image: ${MIGRATE_IMAGE:-webhook-relay-migrate:unset}
+    profiles: [migrate]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-relay}
+    logging: *logging
+
+  app_blue:
+    <<: *app
+    image: ${BLUE_IMAGE:-webhook-relay:unset}
+    profiles: [blue]
+
+  app_green:
+    <<: *app
+    image: ${GREEN_IMAGE:-webhook-relay:unset}
+    profiles: [green]
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      CADDY_TLS: ${CADDY_TLS:?set CADDY_TLS in deploy/.env (your e-mail, or internal)}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./runtime/caddy:/etc/caddy/runtime:ro
+      - caddy_data:/data # certificates and ACME account: keep this volume
+      - caddy_config:/config
+    logging: *logging
+
+  # Replaces Vercel Cron: drives the retry queue.
+  scheduler:
+    <<: *ops
+    user: postgres
+    command: ["/ops/scheduler.sh"]
+    environment:
+      CRON_SECRET: ${CRON_SECRET}
+      SCHEDULER_INTERVAL_SECONDS: ${SCHEDULER_INTERVAL_SECONDS:-30}
+    depends_on: [caddy]
+
+  backup:
+    <<: *ops
+    command: ["/ops/backup-loop.sh"]
+    environment:
+      <<: *db-env
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  monitor:
+    <<: *ops
+    user: postgres
+    command: ["/ops/monitor.sh"]
+    environment:
+      <<: *db-env
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      ALERT_FORMAT: ${ALERT_FORMAT:-json}
+      INSTANCE_NAME: ${INSTANCE_NAME:-webhook-relay}
+      MONITOR_INTERVAL_SECONDS: ${MONITOR_INTERVAL_SECONDS:-30}
+      MONITOR_FAILURES_BEFORE_ALERT: ${MONITOR_FAILURES_BEFORE_ALERT:-3}
+      MONITOR_STARTUP_DELAY_SECONDS: ${MONITOR_STARTUP_DELAY_SECONDS:-20}
+      ALERT_REPEAT_SECONDS: ${ALERT_REPEAT_SECONDS:-3600}
+      QUEUE_STUCK_SECONDS: ${QUEUE_STUCK_SECONDS:-900}
+      QUEUE_MAX_PENDING: ${QUEUE_MAX_PENDING:-1000}
+      DISK_MAX_PERCENT: ${DISK_MAX_PERCENT:-90}
+      BACKUP_MAX_AGE_SECONDS: ${BACKUP_MAX_AGE_SECONDS:-93600}
+    volumes:
+      - ./backups:/backups:ro
+    depends_on: [caddy]
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
