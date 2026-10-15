@@ -151,25 +151,30 @@ escondido pelo nginx.
 ### Resultados
 
 <!-- results:start -->
-Números da [execução 38819257675](https://github.com/trichains/webhook-relay/actions/runs/38819257675)
-(runner `ubuntu-24.04` do GitHub, 4 vCPU; kind v0.33, Kubernetes 1.35.8, Helm 3.22). Cada execução
-imprime as mesmas tabelas no resumo do job; os valores variam um pouco entre execuções.
+Números da [execução 38821942697](https://github.com/trichains/webhook-relay/actions/runs/38821942697)
+(runner `ubuntu-24.04` do GitHub, 4 vCPU; kind v0.33, Kubernetes 1.35.8, Helm 3.22; retries do
+ingress-nginx desligados). Cada execução imprime as mesmas tabelas no resumo do job; os valores
+variam um pouco entre execuções, e as mesmas verificações passaram também nas execuções
+38819257675 e 38820517015.
 
 | verificação | resultado |
 |---|---|
-| smoke | webhook assinado entregue em cerca de 1 s pelo ingress; o CronJob do scheduler enviou uma entrega enfileirada |
-| rolling update v1 → v2 (2 pods substituídos) | 3.576 requisições de health + 249 webhooks assinados durante o rollout, **0 erros**, resposta mais lenta 0,28 s; 249/249 webhooks entregues na primeira tentativa |
-| rollback (imagem que quebra no boot) | o `helm upgrade --atomic` falhou depois de 88 s (timeout de 75 s) e voltou sozinho para a revision 2; 6.192 requisições durante o upgrade com falha, **0 erros** |
-| auto-cura | pod apagado substituído por um pod Ready em **3,5 s**, 0 erros |
-| PodDisruptionBudget | com 5 pods, 4 despejos permitidos e o 5º recusado ("would violate the pod's disruption budget"), 0 erros |
-| HPA | de 2 pods (depois de esperar o scale-down) para **5** pods 27 s após o início da carga; pico de CPU média de 355 % do request; 59.433 requisições de carga, 0 erros |
+| smoke | webhook assinado entregue em 1,2 s pelo ingress; o CronJob do scheduler, rodado sob demanda com o agendamento suspenso, pegou e enviou uma entrega enfileirada |
+| rolling update v1 → v2 (2 pods substituídos) | 2.119 requisições de health + 146 webhooks assinados enquanto o `deploy.sh` rodava (28 s: build com cache, kind load, hook de migração, rollout), **0 erros**, resposta mais lenta 0,22 s; 146/146 webhooks entregues na primeira tentativa |
+| rollback (imagem que quebra no boot) | o `helm upgrade --atomic` falhou depois de 87 s (timeout de 75 s) e voltou sozinho para a revision 2 (histórico: `3 failed`, `4 deployed: Rollback to 2`); 6.448 requisições durante o upgrade com falha, **0 erros** |
+| autocura | pod apagado substituído por um pod Ready em **3,4 s**, 0 erros |
+| PodDisruptionBudget | HPA congelado em 5 pods: 4 evictions permitidas e a 5ª recusada ("would violate the pod's disruption budget"); 1.916 requisições durante a remoção e as evictions, 0 erros |
+| HPA | de 2 pods (depois de esperar 87 s pelo scale-down) para 3 pods 27 s após o início da carga e **5** pods aos 43 s; pico de CPU média de 398 % do request; 87.504 requisições de carga, 0 erros |
 
-Uma execução anterior (antes de a verificação de entrega esperar os retries) teve 2 de 138
-webhooks do rollout ainda pendentes 150 s depois dele, com zero erros HTTP; agora a verificação
-espera até 390 s e informa quantas entregas precisaram de retry, então isso aparece nos números se
-acontecer de novo. Durante o rollout o HPA foi a 5 pods: o build no runner e o tráfego de teste
-passam da meta de 50 % de um request de 100m, e por isso a verificação do HPA espera o scale-down
-antes de começar.
+Só o tráfego leve dos testes (4 workers de health + 1 de webhook) já leva dois pods acima de 50 %
+de um request de 100m de CPU, então o HPA às vezes adiciona pods durante as verificações de rollout
+e rollback. Por isso a verificação do HPA primeiro espera, sem tráfego, o scale-down até o
+`minReplicas`.
+
+Uma execução inicial (antes de os sinks embutidos passarem pelo Service e de a verificação de
+entrega esperar os retries) teve 2 de 138 webhooks do rollout ainda pendentes 150 s depois, com
+zero erros HTTP. Os dados para explicar isso não foram coletados naquela execução; desde então a
+verificação informa quantas entregas precisaram de retry, e o número foi 0 em todas as execuções.
 <!-- results:end -->
 
 ## Rodando localmente

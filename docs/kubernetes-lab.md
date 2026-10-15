@@ -150,25 +150,28 @@ connection while shutting down would show up as an error instead of being hidden
 ### Results
 
 <!-- results:start -->
-Numbers from [run 38819257675](https://github.com/trichains/webhook-relay/actions/runs/38819257675)
-(GitHub `ubuntu-24.04` runner, 4 vCPU; kind v0.33, Kubernetes 1.35.8, Helm 3.22). Each run prints
-the same tables in its job summary; they vary a little from run to run.
+Numbers from [run 38821942697](https://github.com/trichains/webhook-relay/actions/runs/38821942697)
+(GitHub `ubuntu-24.04` runner, 4 vCPU; kind v0.33, Kubernetes 1.35.8, Helm 3.22; ingress-nginx
+retries off). Each run prints the same tables in its job summary; the values vary a little from
+run to run, and the same checks also passed in runs 38819257675 and 38820517015.
 
 | check | result |
 |---|---|
-| smoke | signed webhook delivered in about 1 s through the ingress; scheduler CronJob sent a queued delivery |
-| rolling update v1 → v2 (2 pods replaced) | 3,576 health requests + 249 signed webhooks during the rollout, **0 errors**, slowest response 0.28 s; 249/249 webhooks delivered on the first attempt |
-| rollback (image that crashes on boot) | `helm upgrade --atomic` failed after 88 s (75 s timeout) and rolled back to revision 2 by itself; 6,192 requests during the failed upgrade, **0 errors** |
-| self-healing | deleted pod replaced by a Ready pod in **3.5 s**, 0 errors |
-| PodDisruptionBudget | with 5 pods, 4 evictions allowed, the 5th refused ("would violate the pod's disruption budget"), 0 errors |
-| HPA | from 2 pods (after waiting for the scale-down) to **5** pods 27 s after the load started; peak average CPU 355 % of the request; 59,433 load requests, 0 errors |
+| smoke | signed webhook delivered in 1.2 s through the ingress; the scheduler CronJob, run on demand with the schedule suspended, claimed and sent a queued delivery |
+| rolling update v1 → v2 (2 pods replaced) | 2,119 health requests + 146 signed webhooks while `deploy.sh` ran (28 s: build from cache, kind load, migration hook, rollout), **0 errors**, slowest response 0.22 s; 146/146 webhooks delivered on the first attempt |
+| rollback (image that crashes on boot) | `helm upgrade --atomic` failed after 87 s (75 s timeout) and rolled back to revision 2 by itself (history: `3 failed`, `4 deployed: Rollback to 2`); 6,448 requests during the failed upgrade, **0 errors** |
+| self-healing | deleted pod replaced by a Ready pod in **3.4 s**, 0 errors |
+| PodDisruptionBudget | HPA frozen at 5 pods: 4 evictions allowed, the 5th refused ("would violate the pod's disruption budget"); 1,916 requests during deletion + evictions, 0 errors |
+| HPA | from 2 pods (after an 87 s wait for the scale-down) to 3 pods 27 s after the load started and **5** pods at 43 s; peak average CPU 398 % of the request; 87,504 load requests, 0 errors |
 
-One earlier run (before the delivery check waited for retries) had 2 of 138 webhooks from the
-rollout still pending 150 s after it, with zero HTTP errors; the check now waits up to 390 s and
-reports how many deliveries needed a retry, so this shows up in the numbers if it happens again.
-During the rollout the HPA scaled to 5 pods: the build on the runner and the test traffic push
-CPU above the 50 % target of a 100m request, which is why the HPA check first waits for the
-scale-down.
+The light test traffic alone (4 health workers + 1 webhook worker) is enough to push two pods past
+50 % of a 100m CPU request, so the HPA sometimes adds pods during the rollout and rollback checks.
+That is why the HPA check first waits, without traffic, for the scale-down to `minReplicas`.
+
+An early run (before the built-in sinks went through the Service and before the delivery check
+waited for retries) had 2 of 138 webhooks from the rollout still pending 150 s later, with zero
+HTTP errors. The data to explain it was not collected in that run; since then the check reports
+how many deliveries needed a retry, and it has been 0 in every run.
 <!-- results:end -->
 
 ## Running it locally
