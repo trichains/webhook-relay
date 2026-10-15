@@ -67,6 +67,10 @@ jobs:
       - name: Alerting (outage → alert → recovery)
         run: deploy/ci/alert.sh
 
+      - name: Results (copy of the job summary)
+        if: always()
+        run: cat "$GITHUB_STEP_SUMMARY"
+
       - name: Diagnose snapshot
         if: always()
         run: deploy/scripts/diagnose.sh || true
