@@ -1,0 +1,90 @@
+name: Self-hosting
+
+# Lab for the Docker self-hosting kit (deploy/, docs/self-hosting.md): builds the image, brings
+# the production compose stack up on the runner with Caddy's internal CA, then exercises it from
+# outside: smoke test, zero-downtime blue-green deploy under load, automatic rollback of a
+# crashing release, backup/restore and alerting. Results go to the job summary.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: selfhost-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    name: Docker stack (deploy, zero downtime, rollback, backup, alerts)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_EXTRA_FILES: ${{ github.workspace }}/deploy/ci/compose.ci.yaml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tooling
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          docker compose version
+          shellcheck --version | head -n 2
+
+      - name: Shellcheck deploy scripts
+        run: shellcheck -x -S warning -e SC1091 deploy/scripts/*.sh deploy/ops/*.sh deploy/ci/*.sh
+
+      - name: Configure the lab (deploy/.env, mock alert receiver)
+        run: |
+          deploy/ci/setup-env.sh
+          deploy/scripts/dc.sh config --quiet
+          deploy/scripts/dc.sh up -d alert-sink
+
+      - name: First deploy (v1)
+        run: deploy/scripts/deploy.sh --build v1
+
+      - name: Image size
+        run: |
+          size=$(docker image inspect webhook-relay:v1 -f '{{.Size}}' | awk '{printf "%.0f MB", $1/1000/1000}')
+          msize=$(docker image inspect webhook-relay-migrate:v1 -f '{{.Size}}' | awk '{printf "%.0f MB", $1/1000/1000}')
+          echo "## Self-hosting lab" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image \`webhook-relay\`: **$size** · migration job image: $msize · user: $(docker image inspect webhook-relay:v1 -f '{{.Config.User}}')" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test (HTTPS → ingest → delivered)
+        run: deploy/ci/smoke.sh
+
+      - name: Zero-downtime deploy (v1 → v2 under load)
+        run: deploy/ci/zero-downtime.sh v2
+
+      - name: Automatic rollback (crashing release)
+        run: deploy/ci/rollback.sh
+
+      - name: Backup / restore
+        run: deploy/ci/backup-restore.sh
+
+      - name: Alerting (outage → alert → recovery)
+        run: deploy/ci/alert.sh
+
+      - name: Diagnose snapshot
+        if: always()
+        run: deploy/scripts/diagnose.sh || true
+
+      - name: Collect logs
+        if: failure()
+        run: |
+          mkdir -p lab-logs
+          deploy/scripts/dc.sh logs --no-color --timestamps > lab-logs/compose.log 2>&1 || true
+          cp deploy/runtime/state.env deploy/runtime/caddy/upstream.caddy lab-logs/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: selfhost-lab-logs
+          path: lab-logs
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: deploy/scripts/dc.sh down -v --remove-orphans || true
