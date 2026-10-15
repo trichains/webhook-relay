@@ -1,0 +1,10 @@
+# CI-only additions to deploy/compose.yaml (loaded through COMPOSE_EXTRA_FILES).
+# alert-sink stands in for Discord/ntfy: it records every alert the monitor posts.
+services:
+  alert-sink:
+    image: node:22-alpine
+    command: ["node", "/ci/alert-sink.mjs"]
+    volumes:
+      - ./ci/alert-sink.mjs:/ci/alert-sink.mjs:ro
+    ports:
+      - "127.0.0.1:9000:9000"

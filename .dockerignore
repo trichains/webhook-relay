@@ -1,0 +1,23 @@
+# Keep the build context small and free of secrets.
+.git
+.github
+.next
+.vercel
+node_modules
+coverage
+test-results
+playwright-report
+blob-report
+video
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+docs
+README*.md
+e2e
+tests
+deploy
+!deploy/migrate
+Dockerfile
+.dockerignore

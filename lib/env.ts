@@ -18,6 +18,17 @@ export const env = {
   get appUrl(): string | undefined {
     return process.env.NEXT_PUBLIC_APP_URL || undefined;
   },
+  /**
+   * Self-hosting: origin the server uses to reach its own built-in sinks (`/api/sink/*`), e.g.
+   * http://127.0.0.1:3000 inside the container. Keeps those deliveries off the public proxy.
+   */
+  get internalUrl(): string | undefined {
+    return process.env.RELAY_INTERNAL_URL || undefined;
+  },
+  /** Build/version label reported by /api/health when set (the Docker image sets it). */
+  get appVersion(): string | undefined {
+    return process.env.APP_VERSION || undefined;
+  },
 };
 
 /**

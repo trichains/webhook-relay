@@ -150,6 +150,11 @@ describe("delivery rules", () => {
     expect(resolveTargetUrl("/api/sink/ok", "http://localhost:3101/")).toBe("http://localhost:3101/api/sink/ok");
     expect(resolveTargetUrl("https://example.com/hook", "http://x")).toBe("https://example.com/hook");
   });
+
+  it("prefers the internal origin for built-in sinks when self-hosted", () => {
+    expect(resolveTargetUrl("/api/sink/ok", "https://relay.example.com", "http://127.0.0.1:3000/")).toBe("http://127.0.0.1:3000/api/sink/ok");
+    expect(resolveTargetUrl("https://example.com/hook", "https://relay.example.com", "http://127.0.0.1:3000")).toBe("https://example.com/hook");
+  });
 });
 
 
