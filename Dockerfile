@@ -24,7 +24,9 @@ COPY . .
 # the build value only lands in the statically prerendered pages (Open Graph URLs on "/").
 # Left empty it must stay *unset*: an empty string would be inlined and shadow the runtime value.
 ARG NEXT_PUBLIC_APP_URL=
-RUN if [ -z "$NEXT_PUBLIC_APP_URL" ]; then unset NEXT_PUBLIC_APP_URL; fi && npm run build
+# public/ has no files in git today; mkdir keeps the runner's COPY valid either way.
+RUN if [ -z "$NEXT_PUBLIC_APP_URL" ]; then unset NEXT_PUBLIC_APP_URL; fi && npm run build \
+    && mkdir -p public
 
 # ---- migrator: drizzle migrations only (drizzle-orm + pg, same versions as the app) ----
 FROM ${NODE_IMAGE} AS migrator
