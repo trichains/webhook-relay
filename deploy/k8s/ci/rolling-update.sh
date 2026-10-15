@@ -12,6 +12,8 @@ old_pods=$(ready_web_pods | sort)
 rev_before=$(h status "$RELEASE" -n "$NAMESPACE" -o json | jq -r .version)
 dir=/tmp/k8s-rolling
 load_start "$dir"
+# Follow the old pods' logs: they disappear with the pods, and they explain any delivery problem.
+for p in $old_pods; do kn logs -f "$p" >"$dir/pod-$p.log" 2>&1 & done
 sleep 3
 started=$SECONDS
 "$K8S_DIR/scripts/deploy.sh" --build "$NEW_TAG"
@@ -27,6 +29,25 @@ say "rolling update $before -> $after: $result"
 
 read -r delivered pending other <<<"$(wait_deliveries "$dir")"
 say "webhooks accepted during the rollout: $ingest_ok, delivered $delivered, pending $pending, other $other"
+if [ "$pending" != 0 ] || [ "$other" != 0 ]; then
+  say "undelivered webhooks (delivery state and attempts):"
+  psql_q -c "
+    select e.id, e.payload->>'id' as webhook, e.received_at, d.status, d.attempt_count, d.locked_at,
+           d.next_attempt_at, d.last_status_code, left(d.last_error, 120) as last_error
+    from events e join deliveries d on d.event_id = e.id
+    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and e.status <> 'delivered'
+    order by e.received_at" >&2
+  psql_q -c "
+    select a.delivery_id, a.attempt_number, a.trigger, a.ok, a.status_code, a.latency_ms, a.started_at, left(a.error, 120) as error
+    from attempts a join deliveries d on d.id = a.delivery_id join events e on e.id = d.event_id
+    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and e.status <> 'delivered'
+    order by a.started_at" >&2
+  for id in $(psql_q -At -c "select id from events where source_id = 'src_ci' and payload->>'id' like 'load-$(basename "$dir")-%' and status <> 'delivered'"); do
+    grep -h "$id" "$dir"/pod-*.log >&2 || true
+  done
+  say "old pods' last log lines:"
+  tail -n 15 "$dir"/pod-*.log >&2 || true
+fi
 
 {
   echo "### Rolling update without downtime ($before → $after, helm revision $rev_before → $rev_after)"
