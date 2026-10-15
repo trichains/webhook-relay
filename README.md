@@ -6,6 +6,7 @@ A webhook gateway for payment and sales platforms. It verifies signatures, dedup
 
 [![CI](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml)
 [![Self-hosting](https://github.com/trichains/webhook-relay/actions/workflows/selfhost.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/selfhost.yml)
+[![Kubernetes lab](https://github.com/trichains/webhook-relay/actions/workflows/k8s-lab.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/k8s-lab.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Demo](https://img.shields.io/badge/demo-live-f2884b.svg)](https://webhook-relay-gray.vercel.app)
 
@@ -229,6 +230,20 @@ on boot refused automatically (the proxy never switches), backup → wipe → re
 outage that produces exactly one alert and one "resolved". It is a tested kit and a lab, not a
 managed service. Guide: [docs/self-hosting.md](docs/self-hosting.md) ·
 runbook: [docs/runbook.md](docs/runbook.md).
+
+## Kubernetes lab
+
+A study lab, not a production setup: the same images packaged as a Helm chart
+([`deploy/k8s`](deploy/k8s)) with a Deployment (startup/readiness/liveness probes, preStop drain,
+rolling updates with `maxUnavailable: 0`, non-root and read-only root filesystem), Service,
+ingress-nginx Ingress, CPU HPA (2-5 pods), PodDisruptionBudget, the migrations as a Helm
+pre-upgrade hook Job and the scheduler as a CronJob. The
+[Kubernetes lab workflow](.github/workflows/k8s-lab.yml) creates a kind cluster on every PR and
+checks it from outside through the ingress: signed webhook delivered, a v1 → v2 rolling update
+under continuous traffic with zero failed requests, a crashing release rolled back automatically
+by `helm --atomic`, a deleted pod replaced and the PDB refusing an eviction, and the HPA scaling
+above its minimum under load. What each object does, the numbers and the limitations (one node,
+lab database, ingress-nginx retired upstream, no TLS): [docs/kubernetes-lab.md](docs/kubernetes-lab.md).
 
 ## Demo & limitations
 

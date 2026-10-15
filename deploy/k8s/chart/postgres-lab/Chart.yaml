@@ -1,0 +1,8 @@
+apiVersion: v2
+name: postgres-lab
+description: >-
+  Single-instance Postgres for the Kubernetes lab (StatefulSet + PVC). Lab only: no replication,
+  no failover, no PITR. In production use a managed Postgres and point the webhook-relay chart at it.
+type: application
+version: 0.1.0
+appVersion: "17"

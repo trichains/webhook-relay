@@ -1,0 +1,114 @@
+name: Kubernetes lab
+
+# Study lab for Kubernetes (deploy/k8s, docs/kubernetes-lab.md), verified on every PR: creates a
+# kind cluster on the runner with ingress-nginx and metrics-server, installs the Helm chart, then
+# checks from outside: smoke test through the ingress, rolling update under continuous traffic,
+# automatic rollback of a crashing release (helm --atomic), self-healing + PodDisruptionBudget,
+# and the HPA scaling under CPU load. Numbers go to the log and to the job summary.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: k8s-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lab:
+    name: kind cluster (Helm, rolling update, rollback, self-healing, HPA)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs kind and kubectl only; the cluster itself is created by deploy/k8s/scripts/up.sh.
+      - uses: helm/kind-action@v1.15.0
+        with:
+          version: v0.33.0
+          kubectl_version: v1.35.8
+          install_only: true
+          # Its post-job cleanup then deletes this cluster too.
+          cluster_name: webhook-relay-lab
+          ignore_failed_clean: true
+
+      - uses: azure/setup-helm@v5.0.1
+        with:
+          version: v3.22.0
+
+      - name: Tooling
+        run: |
+          docker version --format 'docker {{.Server.Version}}'
+          kind version
+          kubectl version --client
+          helm version --short
+          shellcheck --version | head -n 2
+
+      - name: Lint (shellcheck, helm lint, render)
+        run: |
+          shellcheck -x -S warning -e SC1091 deploy/k8s/scripts/*.sh deploy/k8s/ci/*.sh
+          helm lint --strict deploy/k8s/chart/postgres-lab
+          helm lint --strict deploy/k8s/chart/webhook-relay --set secrets.adminToken=x,secrets.cronSecret=y
+          helm template relay deploy/k8s/chart/webhook-relay --set secrets.adminToken=x,secrets.cronSecret=y > /tmp/rendered.yaml
+          # The chart refuses to render without secrets (nothing real lives in values.yaml).
+          if helm template relay deploy/k8s/chart/webhook-relay > /dev/null 2>&1; then
+            echo "chart rendered without secrets"; exit 1
+          fi
+          grep -c '^kind:' /tmp/rendered.yaml | xargs echo "rendered objects:"
+          grep '^kind:' /tmp/rendered.yaml | sort | uniq -c
+
+      - name: Cluster up (kind + ingress-nginx + metrics-server)
+        run: deploy/k8s/scripts/up.sh
+
+      - name: First install (v1)
+        run: deploy/k8s/scripts/deploy.sh --build v1
+
+      - name: Smoke test (ingress → ingest → delivered, scheduler CronJob)
+        run: deploy/k8s/ci/smoke.sh
+
+      - name: Rolling update without downtime (v1 → v2 under traffic)
+        run: deploy/k8s/ci/rolling-update.sh v2
+
+      - name: Automatic rollback (crashing release, helm --atomic)
+        run: deploy/k8s/ci/rollback.sh
+
+      - name: Self-healing and PodDisruptionBudget
+        run: deploy/k8s/ci/self-heal.sh
+
+      - name: HPA under CPU load
+        run: deploy/k8s/ci/hpa.sh
+
+      - name: Cluster snapshot
+        if: always()
+        run: |
+          ctx=kind-webhook-relay-lab
+          kubectl --context $ctx -n relay get deploy,rs,pods,svc,ingress,hpa,pdb,cronjob,job,sts,pvc -o wide || true
+          helm --kube-context $ctx -n relay history relay || true
+          kubectl --context $ctx top pods -n relay || true
+
+      - name: Collect logs
+        if: failure()
+        run: |
+          ctx=kind-webhook-relay-lab
+          mkdir -p lab-logs
+          kubectl --context $ctx -n relay get events --sort-by=.lastTimestamp > lab-logs/events.txt 2>&1 || true
+          kubectl --context $ctx -n relay describe pods > lab-logs/pods.txt 2>&1 || true
+          kubectl --context $ctx -n relay logs -l app.kubernetes.io/component=web --all-containers --prefix --tail=-1 > lab-logs/app.log 2>&1 || true
+          kubectl --context $ctx -n relay logs job/relay-migrate > lab-logs/migrate.log 2>&1 || true
+          kubectl --context $ctx -n ingress-nginx logs deploy/ingress-nginx-controller --tail=2000 > lab-logs/ingress.log 2>&1 || true
+          kind export logs --name webhook-relay-lab lab-logs/kind > /dev/null 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: k8s-lab-logs
+          path: lab-logs
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: kind delete cluster --name webhook-relay-lab || true

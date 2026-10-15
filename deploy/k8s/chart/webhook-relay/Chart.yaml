@@ -1,0 +1,12 @@
+apiVersion: v2
+name: webhook-relay
+description: >-
+  webhook-relay on Kubernetes (study lab, verified in CI on kind): app Deployment with probes and
+  graceful drain, Service, Ingress, HPA, PodDisruptionBudget, migration hook Job and the queue
+  scheduler CronJob. See docs/kubernetes-lab.md.
+type: application
+version: 0.1.0
+appVersion: "v1"
+home: https://github.com/trichains/webhook-relay
+sources:
+  - https://github.com/trichains/webhook-relay
