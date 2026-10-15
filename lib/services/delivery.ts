@@ -49,8 +49,9 @@ export function defaultBackoff(): BackoffConfig {
   return env.isSandbox ? SANDBOX_BACKOFF : PRODUCTION_BACKOFF;
 }
 
-export function resolveTargetUrl(url: string, baseUrl: string): string {
-  return url.startsWith("/") ? `${baseUrl.replace(/\/$/, "")}${url}` : url;
+/** Relative URLs are built-in sinks; RELAY_INTERNAL_URL (self-hosting) wins over the public base URL. */
+export function resolveTargetUrl(url: string, baseUrl: string, internalUrl = env.internalUrl): string {
+  return url.startsWith("/") ? `${(internalUrl ?? baseUrl).replace(/\/$/, "")}${url}` : url;
 }
 
 /**

@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // The Docker image (Dockerfile) builds with NEXT_OUTPUT=standalone; Vercel builds stay as before.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
   // PGlite ships a WASM build of Postgres plus data files; keep it out of the bundler
   // so it loads them from node_modules at runtime.
   serverExternalPackages: ["@electric-sql/pglite"],
