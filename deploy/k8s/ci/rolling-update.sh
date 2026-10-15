@@ -58,7 +58,7 @@ fi
   echo "| metric | value |"
   echo "|---|---|"
   echo "| deploy.sh (build + kind load + migration hook + rollout, --wait --atomic) | ${deploy_s}s |"
-  echo "| strategy | RollingUpdate maxSurge 1 / maxUnavailable 0, preStop 10s, grace 40s |"
+  echo "| strategy | $(kn get deploy "$RELEASE" -o jsonpath='RollingUpdate maxSurge {.spec.strategy.rollingUpdate.maxSurge} / maxUnavailable {.spec.strategy.rollingUpdate.maxUnavailable}, preStop {.spec.template.spec.containers[0].lifecycle.preStop.sleep.seconds}s, grace {.spec.template.spec.terminationGracePeriodSeconds}s') |"
   echo "| pods replaced | $replaced of $(echo "$old_pods" | grep -c .) |"
   echo "| /api/health requests through the ingress during the rollout | $health_total |"
   echo "| ↳ errors / timeouts | **$health_errors** (slowest ${health_max_s}s) |"
