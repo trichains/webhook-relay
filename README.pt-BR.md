@@ -6,6 +6,7 @@ Um gateway de webhooks para plataformas de pagamento e vendas. Ele verifica assi
 
 [![CI](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/ci.yml)
 [![Self-hosting](https://github.com/trichains/webhook-relay/actions/workflows/selfhost.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/selfhost.yml)
+[![Kubernetes lab](https://github.com/trichains/webhook-relay/actions/workflows/k8s-lab.yml/badge.svg)](https://github.com/trichains/webhook-relay/actions/workflows/k8s-lab.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Demo](https://img.shields.io/badge/demo-live-f2884b.svg)](https://webhook-relay-gray.vercel.app)
 
@@ -229,6 +230,20 @@ automaticamente, backup → apagar → restore com as contagens batendo, e uma q
 exatamente um alerta e um "resolved". É um kit testado e um laboratório, não um serviço
 gerenciado. Guia: [docs/self-hosting.pt-BR.md](docs/self-hosting.pt-BR.md) ·
 runbook: [docs/runbook.pt-BR.md](docs/runbook.pt-BR.md).
+
+## Laboratório de Kubernetes
+
+Um laboratório de estudo, não uma configuração de produção: as mesmas imagens empacotadas num chart
+Helm ([`deploy/k8s`](deploy/k8s)) com Deployment (probes de startup/readiness/liveness, drenagem
+com preStop, rolling update com `maxUnavailable: 0`, usuário não-root e sistema de arquivos
+somente leitura), Service, Ingress no ingress-nginx, HPA por CPU (2 a 5 pods),
+PodDisruptionBudget, as migrations como Job de hook pre-upgrade do Helm e o scheduler como
+CronJob. O [workflow Kubernetes lab](.github/workflows/k8s-lab.yml) cria um cluster kind em todo
+PR e testa de fora, pelo ingress: webhook assinado entregue, rolling update v1 → v2 com tráfego
+contínuo e zero requisições com erro, uma release que quebra no boot revertida sozinha pelo
+`helm --atomic`, um pod apagado substituído e o PDB recusando um despejo, e o HPA escalando acima
+do mínimo sob carga. O que cada objeto faz, os números e as limitações (um nó, banco de
+laboratório, ingress-nginx aposentado, sem TLS): [docs/kubernetes-lab.pt-BR.md](docs/kubernetes-lab.pt-BR.md).
 
 ## Demo e limitações
 
