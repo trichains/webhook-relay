@@ -28,7 +28,7 @@ eval "$result"
   echo "| ↳ slowest response | ${health_max_s}s |"
   echo "| signed webhooks ingested during deploy | $ingest_total |"
   echo "| ↳ errors / timeouts | **$ingest_errors** |"
-} >>"$SUMMARY"
+} | tee -a "$SUMMARY"
 
 [ "$after" = "$NEW_TAG" ] || { say "expected version $NEW_TAG after deploy, got $after"; exit 1; }
 [ "$health_total" -gt 50 ] || { say "too few requests ($health_total): the load generator did not run"; exit 1; }

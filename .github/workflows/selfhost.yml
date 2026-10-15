@@ -49,8 +49,10 @@ jobs:
         run: |
           size=$(docker image inspect webhook-relay:v1 -f '{{.Size}}' | awk '{printf "%.0f MB", $1/1000/1000}')
           msize=$(docker image inspect webhook-relay-migrate:v1 -f '{{.Size}}' | awk '{printf "%.0f MB", $1/1000/1000}')
-          echo "## Self-hosting lab" >> "$GITHUB_STEP_SUMMARY"
-          echo "Image \`webhook-relay\`: **$size** · migration job image: $msize · user: $(docker image inspect webhook-relay:v1 -f '{{.Config.User}}')" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Self-hosting lab"
+            echo "Image \`webhook-relay\`: **$size** · migration job image: $msize · user: $(docker image inspect webhook-relay:v1 -f '{{.Config.User}}')"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Smoke test (HTTPS → ingest → delivered)
         run: deploy/ci/smoke.sh
@@ -66,10 +68,6 @@ jobs:
 
       - name: Alerting (outage → alert → recovery)
         run: deploy/ci/alert.sh
-
-      - name: Results (copy of the job summary)
-        if: always()
-        run: cat "$GITHUB_STEP_SUMMARY"
 
       - name: Diagnose snapshot
         if: always()

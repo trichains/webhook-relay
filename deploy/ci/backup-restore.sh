@@ -46,7 +46,7 @@ read -r s d e dl a <<<"$before"
   echo "| restore | ${restore_s}s (single transaction, safety backup first) |"
   echo "| rows after restore | $(tr ' ' '/' <<<"$after" | sed 's|/| / |g') |"
   echo "| counts match | $([ "$before" = "$after" ] && echo '**yes**' || echo '**NO**') |"
-} >>"$SUMMARY"
+} | tee -a "$SUMMARY"
 
 [ "$before" = "$after" ] || { say "row counts differ after restore"; exit 1; }
 # Regression (docs/incidents/2026-10-15-restore-overwritten-by-safety-backup.md): the safety

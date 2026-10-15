@@ -63,5 +63,5 @@ sched_s=$((SECONDS - sched_started))
   echo "| signed webhook → delivered to /api/sink/ok | ${latency}s ($attempt) |"
   echo "| wrong signature | 401 |"
   echo "| queued delivery picked up by the scheduler | ${sched_s}s |"
-} >>"$SUMMARY"
+} | tee -a "$SUMMARY"
 say "smoke ok"

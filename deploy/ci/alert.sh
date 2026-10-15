@@ -47,7 +47,7 @@ sample=$(alerts | jq -c '[.[] | select(.body.check == "health")][-1].body | {sta
   echo "| app healthy again after restart | ${recovered_s}s |"
   echo "| resolved alert received | ${resolved_s}s after restart |"
   echo "| last alert payload | \`$sample\` |"
-} >>"$SUMMARY"
+} | tee -a "$SUMMARY"
 
 [ "$firing_total" = 1 ] || { say "expected exactly 1 firing alert, got $firing_total"; exit 1; }
 say "alert ok"

@@ -38,7 +38,7 @@ done
 
 section "proxy 5xx and TLS/ACME messages (since $SINCE)"
 dc logs --no-color --no-log-prefix --since "$SINCE" caddy 2>/dev/null |
-  grep -E '"status":5[0-9][0-9]|"level":"error"|acme|certificate|tls' | tail -n 20
+  grep -E '"status":5[0-9]{2}|"level":"(error|warn)"|"logger":"(tls|http\.acme)' | tail -n 20 | cut -c1-400
 
 section "scheduler / monitor / backup (since $SINCE)"
 for svc in scheduler monitor backup; do

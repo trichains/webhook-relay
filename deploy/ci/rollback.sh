@@ -38,7 +38,7 @@ say "rollback: $result (live $live_before -> $live_after)"
   echo "| live version before / after | $live_before / $live_after |"
   echo "| requests during the failed deploy | $((health_total + ingest_total)) |"
   echo "| ↳ errors / timeouts | **$((health_errors + ingest_errors))** |"
-} >>"$SUMMARY"
+} | tee -a "$SUMMARY"
 
 [ "$live_after" = "$live_before" ] || { say "live version changed"; exit 1; }
 [ "$health_errors" = 0 ] && [ "$ingest_errors" = 0 ] || { say "requests failed during the failed deploy"; exit 1; }
