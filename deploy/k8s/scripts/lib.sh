@@ -13,6 +13,7 @@ RELEASE=${RELEASE:-relay}
 DB_RELEASE=${DB_RELEASE:-relay-postgres}
 APP_CHART="$K8S_DIR/chart/webhook-relay"
 DB_CHART="$K8S_DIR/chart/postgres-lab"
+export APP_CHART DB_CHART
 
 # Pinned versions. ingress-nginx is retired upstream (no releases after March 2026); v1.15.1 is
 # its last release and supports Kubernetes 1.31-1.35, hence the 1.35 node image.
