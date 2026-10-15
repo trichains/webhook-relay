@@ -108,10 +108,18 @@ load_deliveries() {
     from events where source_id = 'src_ci' and payload->>'id' like 'load-$(basename "$1")-%'"
 }
 
+# How many of those deliveries needed more than one attempt.
+load_retried() {
+  psql_q -At -c "
+    select count(*) from deliveries d join events e on e.id = d.event_id
+    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$1")-%' and d.attempt_count > 1"
+}
+
 # Waits until every webhook accepted during a load run has been delivered (first attempt in
-# after(), retries by the scheduler CronJob). Prints "delivered pending other".
+# after(), retries by the scheduler CronJob). The default timeout covers a full retry cycle plus
+# the stale-lock reclaim (5 min). Prints "delivered pending other".
 wait_deliveries() {
-  local dir=$1 end=$((SECONDS + ${2:-150})) counts
+  local dir=$1 end=$((SECONDS + ${2:-390})) counts
   while :; do
     counts=$(load_deliveries "$dir")
     [ "$(cut -d' ' -f2 <<<"$counts")" = 0 ] && break

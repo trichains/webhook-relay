@@ -27,22 +27,26 @@ replaced=$(comm -23 <(echo "$old_pods") <(echo "$new_pods") | grep -c . || true)
 rev_after=$(h status "$RELEASE" -n "$NAMESPACE" -o json | jq -r .version)
 say "rolling update $before -> $after: $result"
 
+wait_started=$SECONDS
 read -r delivered pending other <<<"$(wait_deliveries "$dir")"
-say "webhooks accepted during the rollout: $ingest_ok, delivered $delivered, pending $pending, other $other"
-if [ "$pending" != 0 ] || [ "$other" != 0 ]; then
-  say "undelivered webhooks (delivery state and attempts):"
+settle_s=$((SECONDS - wait_started))
+retried=$(load_retried "$dir")
+replicas_after=$(kn get deploy "$RELEASE" -o jsonpath='{.status.readyReplicas}')
+say "webhooks accepted during the rollout: $ingest_ok, delivered $delivered (after ${settle_s}s), pending $pending, other $other, needed a retry $retried"
+if [ "$pending" != 0 ] || [ "$other" != 0 ] || [ "$retried" != 0 ]; then
+  say "webhooks that were not delivered on the first attempt (delivery state and attempts):"
   psql_q -c "
     select e.id, e.payload->>'id' as webhook, e.received_at, d.status, d.attempt_count, d.locked_at,
            d.next_attempt_at, d.last_status_code, left(d.last_error, 120) as last_error
     from events e join deliveries d on d.event_id = e.id
-    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and e.status <> 'delivered'
+    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and (e.status <> 'delivered' or d.attempt_count > 1)
     order by e.received_at" >&2
   psql_q -c "
     select a.delivery_id, a.attempt_number, a.trigger, a.ok, a.status_code, a.latency_ms, a.started_at, left(a.error, 120) as error
     from attempts a join deliveries d on d.id = a.delivery_id join events e on e.id = d.event_id
-    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and e.status <> 'delivered'
+    where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and (e.status <> 'delivered' or d.attempt_count > 1)
     order by a.started_at" >&2
-  for id in $(psql_q -At -c "select id from events where source_id = 'src_ci' and payload->>'id' like 'load-$(basename "$dir")-%' and status <> 'delivered'"); do
+  for id in $(psql_q -At -c "select e.id from events e join deliveries d on d.event_id = e.id where e.source_id = 'src_ci' and e.payload->>'id' like 'load-$(basename "$dir")-%' and (e.status <> 'delivered' or d.attempt_count > 1)"); do
     grep -h "$id" "$dir"/pod-*.log >&2 || true
   done
   say "old pods' last log lines:"
@@ -60,7 +64,9 @@ fi
   echo "| ↳ errors / timeouts | **$health_errors** (slowest ${health_max_s}s) |"
   echo "| signed webhooks during the rollout | $ingest_total |"
   echo "| ↳ errors / timeouts | **$ingest_errors** |"
-  echo "| ↳ delivered afterwards / still pending / other | $delivered / $pending / $other |"
+  echo "| ↳ delivered / still pending / other (checked for up to 390s) | $delivered / $pending / $other, all settled ${settle_s}s after the rollout |"
+  echo "| ↳ needed more than the first attempt | $retried |"
+  echo "| ready pods after the rollout (the HPA may have added some) | $replicas_after |"
 } | report
 
 [ "$after" = "$NEW_TAG" ] || { say "expected version $NEW_TAG after the upgrade, got $after"; exit 1; }

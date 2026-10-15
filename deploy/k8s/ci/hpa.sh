@@ -15,7 +15,25 @@ wait_until 120 pod_metrics || { say "no pod metrics from metrics-server"; exit 1
 hpa_cpu() { kn get hpa "$RELEASE" -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}'; }
 hpa_cpu_known() { [ -n "$(hpa_cpu)" ]; }
 wait_until 120 hpa_cpu_known || { say "the HPA has no CPU reading yet"; exit 1; }
-start_replicas=$(kn get hpa "$RELEASE" -o jsonpath='{.status.currentReplicas}')
+# Earlier checks put traffic on the app and the HPA may have scaled up already. Start from a clean
+# baseline: no traffic, wait for the HPA to scale back down to minReplicas.
+current() { kn get hpa "$RELEASE" -o jsonpath='{.status.currentReplicas}'; }
+last_log=0
+at_min() {
+  local c
+  c=$(current)
+  if [ $((SECONDS - last_log)) -ge 15 ]; then
+    say "waiting for scale-down to $min: replicas=$c cpu=$(hpa_cpu)%"
+    last_log=$SECONDS
+  fi
+  [ "$c" = "$min" ] && [ "$(ready_web_pods | grep -c .)" = "$min" ]
+}
+idle_started=$SECONDS
+wait_until 360 at_min || { say "the HPA did not return to minReplicas ($min) without traffic"; exit 1; }
+say "back at $min replicas after $((SECONDS - idle_started))s without traffic"
+sleep 20 # let metrics-server report the idle pods
+start_replicas=$(current)
+load_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 say "hpa before load: replicas=$start_replicas cpu=$(hpa_cpu)% (target ${target}%, min $min, max $max)"
 
 "$K8S_DIR/scripts/load.sh" "$DURATION" "$CONCURRENCY" >/tmp/k8s-hpa-load.json &
@@ -41,7 +59,7 @@ wait "$load_pid" || { say "load generator failed"; exit 1; }
 load=$(tail -n 1 /tmp/k8s-hpa-load.json)
 say "load result: $load"
 events=$(kn get events --field-selector "involvedObject.kind=HorizontalPodAutoscaler,reason=SuccessfulRescale" \
-  -o json | jq -r '[.items[].message] | unique | join("; ")')
+  -o json | jq -r --arg t "$load_started_at" '[.items[] | select((.lastTimestamp // .eventTime) >= $t) | .message] | unique | join("; ")')
 
 {
   echo "### Horizontal Pod Autoscaler (CPU target ${target}%, min $min, max $max)"
@@ -51,7 +69,7 @@ events=$(kn get events --field-selector "involvedObject.kind=HorizontalPodAutosc
   echo "| replicas before load | $start_replicas |"
   echo "| first scale-up above min | ${first_up:-never}s after the load started |"
   echo "| peak replicas | **$peak** (peak average CPU ${peak_cpu}% of requests) |"
-  echo "| HPA events | ${events:-none} |"
+  echo "| HPA events during the load | ${events:-none} |"
   echo "| load generator result | \`$load\` |"
   echo "| samples (time: cpu/replicas) | $samples |"
 } | report

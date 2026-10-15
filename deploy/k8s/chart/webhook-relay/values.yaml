@@ -31,8 +31,9 @@ autoscaling:
   maxReplicas: 5
   # Average CPU across pods, as a percentage of resources.requests.cpu.
   targetCPUUtilizationPercentage: 50
-  # How long the HPA waits before removing pods once load drops (default in Kubernetes: 300 s).
-  scaleDownStabilizationSeconds: 120
+  # How long the HPA waits before removing pods once load drops (Kubernetes default: 300 s; short
+  # here so the lab returns to minReplicas quickly between checks).
+  scaleDownStabilizationSeconds: 60
 
 # Rolling update: start one extra pod, wait until it is Ready, then stop one old pod. Never fewer
 # Ready pods than desired during a rollout.
