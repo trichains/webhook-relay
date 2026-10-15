@@ -30,11 +30,11 @@ Para rodar o relay no seu próprio servidor hoje, use o [kit Docker](self-hostin
 | [`deploy/k8s/chart/postgres-lab`](../deploy/k8s/chart/postgres-lab) | um pod de Postgres 17 com volume persistente, em uma release Helm própria. Só para o lab |
 | [`deploy/k8s/kind-config.yaml`](../deploy/k8s/kind-config.yaml) | cluster de um nó, portas 80/443 do host mapeadas para o ingress controller |
 | [`deploy/k8s/scripts/up.sh`](../deploy/k8s/scripts/up.sh) | cria o cluster e instala ingress-nginx e metrics-server (versões fixadas) |
-| [`deploy/k8s/scripts/deploy.sh`](../deploy/k8s/scripts/deploy.sh) | builda as imagens, carrega no kind, `helm upgrade --install --wait --atomic` |
+| [`deploy/k8s/scripts/deploy.sh`](../deploy/k8s/scripts/deploy.sh) | gera as imagens, carrega no kind, `helm upgrade --install --wait --atomic` |
 | [`deploy/k8s/scripts/load.sh`](../deploy/k8s/scripts/load.sh) | carga de CPU de dentro do cluster, para o autoscaler |
-| [`deploy/k8s/ci/`](../deploy/k8s/ci) | as verificações que o workflow roda (smoke, rolling update, rollback, auto-cura, HPA) |
+| [`deploy/k8s/ci/`](../deploy/k8s/ci) | as verificações que o workflow roda (smoke, rolling update, rollback, autocura, HPA) |
 
-As imagens são as mesmas que o kit Docker builda a partir do [`Dockerfile`](../Dockerfile): o app
+As imagens são as mesmas que o kit Docker gera a partir do [`Dockerfile`](../Dockerfile): o app
 (target `runner`, Next.js standalone, usuário `node`) e o job de migração (target `migrator`).
 
 ## Os objetos, com as palavras do projeto
@@ -45,7 +45,7 @@ cria outro, com outro nome e outro IP.
 
 **Deployment (e ReplicaSet).** "Mantenha N pods do webhook-relay na versão X rodando." O
 Deployment `relay` tem um ReplicaSet por versão; cada ReplicaSet recria os pods que somem. É essa a
-auto-cura que o lab testa: apague um pod e um substituto fica Ready em poucos segundos.
+autocura que o lab testa: apague um pod e um substituto fica Ready em poucos segundos.
 
 **Service.** Um nome e um IP virtual estáveis (`relay`, porta 80) na frente dos pods que estão
 *Ready* naquele momento. Pods vêm e vão; a lista de endpoints do Service acompanha a prontidão
@@ -53,15 +53,16 @@ deles. O CronJob do scheduler chama o app por ele.
 
 **Ingress (ingress-nginx).** A entrada HTTP de fora do cluster. O Ingress `relay` diz "mande
 qualquer caminho, em qualquer host, para o Service `relay`"; o controller ingress-nginx (um nginx
-rodando no cluster, preso à porta 80 do nó do kind) aplica essa regra e distribui as requisições
+rodando no cluster, escutando na porta 80 do nó do kind) aplica essa regra e distribui as requisições
 entre os pods Ready. No lab, `http://localhost/api/ingest/<source>` no runner chega a um pod.
 
 **Probes.** Como o Kubernetes sabe o estado de um pod, todas em `GET /api/health` (que roda
 `select 1`):
 - *startupProbe*: até 60 s (2 s × 30) para o Next.js subir; as outras probes esperam por ela.
 - *readinessProbe*: a cada 5 s. Falhar tira o pod do Service (sem tráfego), mas não reinicia.
-  Como ela checa o banco, um pod que não alcança o Postgres para de receber webhooks em vez de
-  responder com erro.
+  Como ela checa o banco, um pod sozinho que não alcança o Postgres para de receber webhooks
+  enquanto os outros atendem. Se o próprio banco cair, todos os pods falham nela e o ingress
+  responde 503 para tudo até ele voltar.
 - *livenessProbe*: a cada 10 s; depois de 6 falhas seguidas (um minuto) o container é reiniciado.
 
 **Rolling update.** Como uma versão nova substitui a antiga dentro do mesmo Deployment:
@@ -69,21 +70,25 @@ entre os pods Ready. No lab, `http://localhost/api/ingest/<source>` no runner ch
 `minReadySeconds: 5`), só então pare um pod antigo", repetindo até todos estarem na versão nova.
 Nunca há menos pods Ready do que o desejado. Isso substitui a troca blue-green do kit Docker.
 
-**Encerramento gracioso (preStop + grace period).** Parar um pod sem derrubar requisições: primeiro
-o pod sai dos endpoints; o `preStop` dorme 10 s enquanto o nginx fica sabendo disso; depois o
-container recebe SIGTERM e o Next.js para de aceitar conexões, termina as requisições em andamento
-e roda os callbacks de `after()` pendentes (a primeira tentativa de entrega dos webhooks recém
-aceitos). `terminationGracePeriodSeconds: 40` é o limite antes do SIGKILL.
+**Encerramento gracioso (preStop + grace period).** Parar um pod sem derrubar requisições: assim
+que o pod é marcado para remoção, duas coisas começam em paralelo: ele sai dos endpoints e o
+`preStop` dorme 10 s, então o pod continua atendendo enquanto o nginx fica sabendo da remoção.
+Depois o container recebe SIGTERM e o Next.js para de aceitar conexões, termina as requisições em
+andamento e espera os callbacks de `after()` pendentes (a primeira tentativa de entrega dos
+webhooks recém-aceitos). Essas tentativas chegam aos sinks embutidos pelo Service
+(`RELAY_INTERNAL_URL=http://relay:80`), e não pelo listener do próprio pod, que nessa hora já
+fechou. `terminationGracePeriodSeconds: 60` é o limite antes do SIGKILL.
 
 **Helm.** O gerenciador de pacotes que transforma o chart (templates + `values.yaml`) em objetos
 do Kubernetes. Cada `helm upgrade` cria uma *revision* numerada da *release* `relay`, então
 `helm rollback relay <n>` volta para qualquer uma anterior. O `deploy.sh` sempre roda
 `helm upgrade --install --wait --atomic`: o Helm espera o rollout ficar Ready e, se não ficar
-dentro do timeout, faz o rollback sozinho.
+dentro do timeout, faz o rollback sozinho. O rollback cobre só os objetos do Kubernetes; uma
+migration que já rodou continua aplicada (veja as limitações).
 
 **Hook do Helm (Job de migração).** O Job `relay-migrate` é anotado como hook
 `pre-install,pre-upgrade`: o Helm roda as migrations do drizzle e espera o Job dar certo *antes*
-de mexer no Deployment. Uma migration com falha para o upgrade com a versão antiga ainda no ar. O
+de mexer no Deployment. Uma migration com falha interrompe o upgrade, com a versão antiga ainda no ar. O
 Job lê só o Secret do banco, que pertence à release separada `relay-postgres`, então ele já existe
 na primeira instalação.
 
@@ -93,11 +98,13 @@ muda o número de réplicas do Deployment entre 2 e 5. O chart omite `replicas` 
 quando o HPA está ligado, para um `helm upgrade` nunca desfazer o que o autoscaler decidiu.
 
 **PodDisruptionBudget (PDB).** Uma promessa para interrupções *voluntárias* (drain de nó, upgrade
-do cluster): `minAvailable: 1` faz a Eviction API recusar despejar um pod se isso deixar menos de
-um pod Ready. Não protege contra crash nem contra um `kubectl delete` direto.
+do cluster): `minAvailable: 1` faz a Eviction API recusar a remoção (eviction) de um pod se isso
+deixar menos de um pod Ready; com N pods Ready, ela permite N - 1 evictions de cada vez. Pods
+rodando mas não Ready sempre podem sair (`unhealthyPodEvictionPolicy: AlwaysAllow`), para nunca
+travarem um drain. Não protege contra crash nem contra um `kubectl delete` direto.
 
-**Job e CronJob.** Um Job roda um pod até terminar (a migração). Um CronJob cria um Job num
-horário: o `relay-scheduler` chama `/api/cron/deliver` a cada minuto com o `CRON_SECRET`,
+**Job e CronJob.** Um Job roda um pod até terminar (a migração). Um CronJob cria Jobs conforme
+um agendamento: o `relay-scheduler` chama `/api/cron/deliver` a cada minuto com o `CRON_SECRET`,
 substituindo o Vercel Cron e o container scheduler do kit Docker. Ele usa a imagem do app (que já
 tem Node e `fetch`), então o lab não baixa nenhuma imagem extra.
 
@@ -105,9 +112,10 @@ tem Node e `fetch`), então o lab não baixa nenhuma imagem extra.
 não secretos (`NEXT_PUBLIC_APP_URL`, `RELAY_INTERNAL_URL`), o Secret guarda `RELAY_ADMIN_TOKEN` e
 `CRON_SECRET`. O chart se recusa a renderizar sem eles (`required`), e o `values.yaml` não tem
 nenhum valor real. O lab gera valores aleatórios em `deploy/k8s/.lab/` (no `.gitignore`). O
-`DATABASE_URL` é montado dentro do pod a partir do Secret do banco
-(`postgres://relay:$(DB_PASSWORD)@relay-postgres:5432/relay`), então a senha nunca fica num
-arquivo de values. Uma anotação de checksum reinicia os pods quando um dos dois muda.
+`DATABASE_URL` não tem senha (`postgres://relay@relay-postgres:5432/relay`): o node-postgres pega
+a senha do `PGPASSWORD`, que vem direto do Secret do banco, então ela nunca fica num arquivo de
+values e não precisa de URL-encoding. Uma anotação de checksum recria os pods (novo rollout)
+quando um dos dois muda.
 
 **StatefulSet e PersistentVolumeClaim (banco do lab).** O Postgres roda como StatefulSet com um
 pod (`relay-postgres-0`, nome estável) e um volume de 1 Gi do provisionador local-path do kind.
@@ -124,7 +132,10 @@ Kubernetes montado.
 Toda verificação fala com o cluster de fora, por `http://localhost` → ingress-nginx, como um
 remetente de webhook faria. O tráfego durante cada mudança é de 4 workers chamando `/api/health`
 mais um worker mandando webhooks assinados a cada 0,2 s; **qualquer** resposta fora de 2xx ou
-timeout reprova o job.
+timeout reprova o job. O lab desliga o retry do ingress-nginx em outro pod
+(`proxy-next-upstream: off`, em [`deploy/k8s/lab-values.yaml`](../deploy/k8s/lab-values.yaml)),
+para que um pod que recusasse conexão durante o desligamento aparecesse como erro, em vez de ser
+escondido pelo nginx.
 
 | etapa | o que prova |
 |---|---|
@@ -134,13 +145,31 @@ timeout reprova o job.
 | Smoke test | health (driver `pg`), 401 sem credenciais, webhook assinado entregue no sink embutido, assinatura errada 401, CronJob do scheduler rodado sob demanda envia uma entrega enfileirada |
 | Rolling update | `helm upgrade` v1 → v2 (imagem nova) com tráfego: zero requisições com erro, e todo webhook aceito durante o rollout termina entregue |
 | Rollback | upgrade para uma imagem que quebra no boot: o `--atomic` estoura o timeout e reverte, os pods antigos seguem atendendo, zero requisições com erro |
-| Auto-cura + PDB | apagar um pod: substituto Ready, zero requisições com erro; despejar pods como num drain de nó: o PDB permite um despejo e recusa o seguinte |
+| Autocura + PDB | apagar um pod: substituto Ready, zero requisições com erro; evictions como num drain de nó (com o HPA congelado): o PDB permite Ready - 1 evictions e recusa a seguinte |
 | HPA | carga dentro do cluster em `/api/health`: as réplicas passam do mínimo; o pico e a linha do tempo ficam registrados |
 
 ### Resultados
 
 <!-- results:start -->
-Preenchido a partir da primeira execução verde.
+Números da [execução 38819257675](https://github.com/trichains/webhook-relay/actions/runs/38819257675)
+(runner `ubuntu-24.04` do GitHub, 4 vCPU; kind v0.33, Kubernetes 1.35.8, Helm 3.22). Cada execução
+imprime as mesmas tabelas no resumo do job; os valores variam um pouco entre execuções.
+
+| verificação | resultado |
+|---|---|
+| smoke | webhook assinado entregue em cerca de 1 s pelo ingress; o CronJob do scheduler enviou uma entrega enfileirada |
+| rolling update v1 → v2 (2 pods substituídos) | 3.576 requisições de health + 249 webhooks assinados durante o rollout, **0 erros**, resposta mais lenta 0,28 s; 249/249 webhooks entregues na primeira tentativa |
+| rollback (imagem que quebra no boot) | o `helm upgrade --atomic` falhou depois de 88 s (timeout de 75 s) e voltou sozinho para a revision 2; 6.192 requisições durante o upgrade com falha, **0 erros** |
+| auto-cura | pod apagado substituído por um pod Ready em **3,5 s**, 0 erros |
+| PodDisruptionBudget | com 5 pods, 4 despejos permitidos e o 5º recusado ("would violate the pod's disruption budget"), 0 erros |
+| HPA | de 2 pods (depois de esperar o scale-down) para **5** pods 27 s após o início da carga; pico de CPU média de 355 % do request; 59.433 requisições de carga, 0 erros |
+
+Uma execução anterior (antes de a verificação de entrega esperar os retries) teve 2 de 138
+webhooks do rollout ainda pendentes 150 s depois dele, com zero erros HTTP; agora a verificação
+espera até 390 s e informa quantas entregas precisaram de retry, então isso aparece nos números se
+acontecer de novo. Durante o rollout o HPA foi a 5 pods: o build no runner e o tráfego de teste
+passam da meta de 50 % de um request de 100m, e por isso a verificação do HPA espera o scale-down
+antes de começar.
 <!-- results:end -->
 
 ## Rodando localmente
@@ -193,10 +222,19 @@ Lista honesta do que este lab **não** prova nem entrega:
 - **Sem TLS.** Só HTTP; um cluster de verdade adicionaria cert-manager e HTTPS no Ingress.
 - **Banco de laboratório.** Um pod de Postgres, sem replicação, sem failover, sem backups dentro do
   Kubernetes (o backup/restore do kit Docker não foi portado). Produção: Postgres gerenciado.
+- **O `--atomic` não desfaz migrations.** O hook de migração roda antes do rollout; se o rollout
+  falhar depois, o app volta para a versão anterior mas o schema continua migrado. Por isso as
+  migrations precisam ser compatíveis com a versão anterior (primeiro expandir, remover colunas
+  numa release seguinte). O teste de rollback usa a mesma imagem de migração, então não exercita
+  isso.
+- **Trabalho longo no desligamento.** O grace period é de 60 s. Uma passada da fila reivindica até
+  50 entregas e cada tentativa pode levar até o timeout da destination (no máximo 30 s); uma
+  passada ainda rodando quando chega o SIGKILL deixa linhas em `processing` até a recuperação de
+  lock vencido (5 min), e essas entregas podem sair duas vezes (o relay já é at-least-once).
 - **A liveness também depende do banco**, porque `/api/health` é o único endpoint de saúde. A
   probe é tolerante (um minuto), mas uma queda longa do banco reiniciaria os pods do app. Um setup
   real separaria liveness (processo vivo) de readiness (dependências ok).
-- **Só interrupções graciosas são testadas.** Apagar e despejar pods passam por preStop e SIGTERM.
+- **Só interrupções graciosas são testadas.** Apagar pods e removê-los por eviction passa por preStop e SIGTERM.
   Um crash duro (OOM kill, SIGKILL) ainda pode derrubar as requisições em andamento naquele pod.
 - **Segredos.** Secrets do Kubernetes são base64, não criptografados, a menos que o cluster ative
   criptografia em repouso; o lab guarda os valores num arquivo local fora do git. Produção:

@@ -236,12 +236,12 @@ runbook: [docs/runbook.pt-BR.md](docs/runbook.pt-BR.md).
 Um laboratório de estudo, não uma configuração de produção: as mesmas imagens empacotadas num chart
 Helm ([`deploy/k8s`](deploy/k8s)) com Deployment (probes de startup/readiness/liveness, drenagem
 com preStop, rolling update com `maxUnavailable: 0`, usuário não-root e sistema de arquivos
-somente leitura), Service, Ingress no ingress-nginx, HPA por CPU (2 a 5 pods),
+raiz somente leitura), Service, Ingress no ingress-nginx, HPA por CPU (2 a 5 pods),
 PodDisruptionBudget, as migrations como Job de hook pre-upgrade do Helm e o scheduler como
 CronJob. O [workflow Kubernetes lab](.github/workflows/k8s-lab.yml) cria um cluster kind em todo
 PR e testa de fora, pelo ingress: webhook assinado entregue, rolling update v1 → v2 com tráfego
 contínuo e zero requisições com erro, uma release que quebra no boot revertida sozinha pelo
-`helm --atomic`, um pod apagado substituído e o PDB recusando um despejo, e o HPA escalando acima
+`helm --atomic`, um pod apagado substituído e o PDB recusando uma eviction, e o HPA escalando acima
 do mínimo sob carga. O que cada objeto faz, os números e as limitações (um nó, banco de
 laboratório, ingress-nginx aposentado, sem TLS): [docs/kubernetes-lab.pt-BR.md](docs/kubernetes-lab.pt-BR.md).
 
