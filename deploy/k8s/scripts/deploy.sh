@@ -55,7 +55,7 @@ h upgrade --install "$DB_RELEASE" "$DB_CHART" -n "$NAMESPACE" --wait --timeout 3
 say "helm upgrade --install $RELEASE ($TAG) --wait --atomic --timeout ${HELM_TIMEOUT:-5m}"
 started=$SECONDS
 h upgrade --install "$RELEASE" "$APP_CHART" -n "$NAMESPACE" \
-  -f "$LAB_DIR/secrets.yaml" \
+  -f "$K8S_DIR/lab-values.yaml" -f "$LAB_DIR/secrets.yaml" \
   --set image.tag="$TAG" \
   --wait --atomic --timeout "${HELM_TIMEOUT:-5m}" "$@" >/dev/null
 say "helm finished in $((SECONDS - started))s"

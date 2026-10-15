@@ -1,0 +1,9 @@
+# Values the lab adds on top of the chart defaults (deploy/k8s/scripts/deploy.sh passes this file).
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 2m
+    # Strict mode for the tests: by default ingress-nginx retries a request on another pod when
+    # the connection fails (error/timeout), which would hide a pod that refuses connections while
+    # it shuts down. With retries off, "zero failed requests" proves the pods drain correctly by
+    # themselves. A production ingress would keep the retries as an extra safety net.
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "off"

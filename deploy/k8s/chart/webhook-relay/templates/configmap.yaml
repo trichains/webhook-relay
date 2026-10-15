@@ -6,7 +6,11 @@ metadata:
     {{- include "relay.labels" . | nindent 4 }}
 data:
   NEXT_PUBLIC_APP_URL: {{ .Values.config.appUrl | quote }}
-  RELAY_INTERNAL_URL: {{ .Values.config.internalUrl | quote }}
+  RELAY_INTERNAL_URL: {{ default (printf "http://%s:%v" (include "relay.fullname" .) .Values.service.port) .Values.config.internalUrl | quote }}
+  KEEP_ALIVE_TIMEOUT: {{ .Values.config.keepAliveTimeoutMs | quote }}
+  # Explicit, rather than relying on the image ENV winning over the runtime's HOSTNAME.
+  HOSTNAME: "0.0.0.0"
+  PORT: "3000"
   {{- range $k, $v := .Values.config.extraEnv }}
   {{ $k }}: {{ $v | quote }}
   {{- end }}

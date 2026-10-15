@@ -57,8 +57,9 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 {{- end -}}
 
-{{/* DATABASE_URL for the app and the migration Job. The password stays in a Secret: Kubernetes
-expands $(DB_PASSWORD) from the variable defined just before it. */}}
+{{/* DATABASE_URL for the app and the migration Job. The password is not part of the URL (no
+URL-encoding problem with any character): node-postgres reads it from PGPASSWORD, which comes
+straight from the database Secret. */}}
 {{- define "relay.databaseEnv" -}}
 {{- if .Values.database.urlSecret.name }}
 - name: DATABASE_URL
@@ -67,13 +68,13 @@ expands $(DB_PASSWORD) from the variable defined just before it. */}}
       name: {{ .Values.database.urlSecret.name }}
       key: {{ .Values.database.urlSecret.key }}
 {{- else }}
-- name: DB_PASSWORD
+- name: PGPASSWORD
   valueFrom:
     secretKeyRef:
       name: {{ required "database.passwordSecret.name is required" .Values.database.passwordSecret.name }}
       key: {{ .Values.database.passwordSecret.key }}
 - name: DATABASE_URL
-  value: {{ printf "postgres://%s:$(DB_PASSWORD)@%s:%v/%s" .Values.database.user .Values.database.host .Values.database.port .Values.database.name | quote }}
+  value: {{ printf "postgres://%s@%s:%v/%s" .Values.database.user .Values.database.host .Values.database.port .Values.database.name | quote }}
 {{- end }}
 {{- end -}}
 

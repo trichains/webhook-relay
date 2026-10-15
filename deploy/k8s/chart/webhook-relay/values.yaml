@@ -74,12 +74,17 @@ probes:
 # Graceful shutdown: on termination the pod is removed from the endpoints while preStop sleeps (so
 # the ingress stops sending new requests), then SIGTERM lets Next finish in-flight requests and
 # pending after() callbacks (first delivery attempts). The grace period covers both.
+# 60 s also leaves room for a queue pass or a first delivery attempt that is still running (each
+# attempt has its own timeout of up to 30 s).
 preStopSleepSeconds: 10
-terminationGracePeriodSeconds: 40
+terminationGracePeriodSeconds: 60
 
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
+  # Pods that are running but not Ready (e.g. database down) may still be evicted, so they never
+  # block a node drain.
+  unhealthyPodEvictionPolicy: AlwaysAllow
 
 service:
   type: ClusterIP
@@ -101,8 +106,13 @@ ingress:
 config:
   # Public base URL (ingest URLs in the UI, built-in sink resolution fallback).
   appUrl: http://localhost
-  # Built-in sinks (/api/sink/*) are reached on the pod itself, never through the ingress.
-  internalUrl: http://127.0.0.1:3000
+  # Origin for the built-in sinks (/api/sink/*). Empty = the Service (http://<release>:<port>):
+  # never through the ingress, and never the pod's own listener, which closes on SIGTERM while
+  # after() callbacks are still delivering.
+  internalUrl: ""
+  # Node keeps idle keep-alive sockets open longer than the ingress (nginx upstream keepalive
+  # timeout is 60 s), so nginx never reuses a socket the app has just closed.
+  keepAliveTimeoutMs: 65000
   extraEnv: {}
 
 # Secret values -> Secret (envFrom). Never commit real values: pass them with -f <file outside git>

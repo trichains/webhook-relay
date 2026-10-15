@@ -8,6 +8,9 @@ metadata:
     {{- include "relay.labels" . | nindent 4 }}
 spec:
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- with .Values.podDisruptionBudget.unhealthyPodEvictionPolicy }}
+  unhealthyPodEvictionPolicy: {{ . }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "relay.webSelectorLabels" . | nindent 6 }}

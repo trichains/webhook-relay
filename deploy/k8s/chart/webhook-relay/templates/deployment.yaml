@@ -71,10 +71,11 @@ spec:
             {{- toYaml .Values.probes.liveness | nindent 12 }}
           lifecycle:
             preStop:
-              # Keep serving while the endpoint removal reaches the ingress controller; SIGTERM
-              # (graceful Next shutdown) is sent only after this returns.
-              exec:
-                command: ["sleep", "{{ .Values.preStopSleepSeconds }}"]
+              # Runs in parallel with the endpoint removal: the pod keeps serving while the change
+              # reaches the ingress controller. SIGTERM (graceful Next shutdown) comes after it.
+              # Native sleep action (GA in Kubernetes 1.34): no sleep binary needed in the image.
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
